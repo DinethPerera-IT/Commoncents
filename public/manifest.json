@@ -1,0 +1,21 @@
+{
+  "name": "CommonCents",
+  "short_name": "CommonCents",
+  "description": "Household finances for the flat",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f2f2f3",
+  "theme_color": "#f2f2f3",
+  "icons": [
+    {
+      "src": "/icons/icon-180.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

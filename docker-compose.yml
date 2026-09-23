@@ -1,0 +1,27 @@
+services:
+  app:
+    build: .
+    container_name: commoncents-app
+    restart: unless-stopped
+    ports:
+      - "3040:3040"
+    env_file: .env
+    depends_on:
+      - db
+    mem_limit: 512m
+
+  db:
+    image: postgres:16-alpine
+    container_name: commoncents-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - commoncents-db-data:/var/lib/postgresql/data
+    # No host port published deliberately — only the app container needs
+    # to reach Postgres, and it does so over Docker's internal network.
+
+volumes:
+  commoncents-db-data:
