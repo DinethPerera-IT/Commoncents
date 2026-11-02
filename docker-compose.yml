@@ -10,9 +10,9 @@ services:
       db:
         condition: service_healthy
     ports:
-      # Loopback only: Caddy on the host proxies commoncents.home.internal -> localhost:3040.
-      # Nothing on the LAN/tailnet can reach the app around Caddy (or forge X-Forwarded-For).
-      - "127.0.0.1:3040:3040"
+      # Open on the home network on purpose: flatmates use http://<server-ip>:3040 directly.
+      # Caddy on the host also proxies commoncents.home.internal -> localhost:3040.
+      - "3040:3040"
     stop_grace_period: 15s   # the app shuts down cleanly on SIGTERM
     volumes:
       - app_data:/app/data

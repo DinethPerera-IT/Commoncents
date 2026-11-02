@@ -31,13 +31,25 @@ const upload = multer({
 });
 
 const PUBLIC = path.join(__dirname, '..', 'public');
+
+// The container's default gateway from /proc/net/route (hex, little-endian), e.g. 172.18.0.1.
+function dockerGateway() {
+  try {
+    const line = fs.readFileSync('/proc/net/route', 'utf8').split('\n')
+      .map((l) => l.trim().split(/\s+/)).find((f) => f[1] === '00000000' && f[2] !== '00000000');
+    return line ? [line[2].match(/../g).reverse().map((h) => parseInt(h, 16)).join('.')] : [];
+  } catch {
+    return [];
+  }
+}
 const app = express();
 app.disable('x-powered-by');
-// Caddy (on the host) is the only way in, and it reaches the container from the Docker
-// bridge gateway, a private address. Trusting loopback + private ranges lets req.ip be the
-// real client from X-Forwarded-For, which the rate limiter needs. Safe only because the
-// port is published on 127.0.0.1, so nobody else can send a forged header.
-app.set('trust proxy', process.env.TRUST_PROXY || 'loopback, uniquelocal');
+// Two ways in: Caddy on the host (commoncents.*.internal) and direct LAN/Tailscale access to
+// host:3040. Caddy reaches the container through docker-proxy, so its requests come from the
+// Docker network's gateway; LAN clients arrive with their own address. Trust X-Forwarded-For
+// only from that gateway (and loopback): then req.ip is the real client either way, and a LAN
+// device can't dodge the login rate limit by sending a fake X-Forwarded-For header.
+app.set('trust proxy', process.env.TRUST_PROXY || ['loopback', ...dockerGateway()]);
 app.use(helmet({
   contentSecurityPolicy: {
     useDefaults: false,
@@ -712,7 +724,7 @@ migrateAndSeed()
   .then(materialise)
   .then(() => {
     const timer = setInterval(() => materialise().catch(console.error), 6 * 3600 * 1000);
-    const server = app.listen(PORT, '0.0.0.0', () => console.log('CommonCents listening on :' + PORT + ' (build ' + BUILD_ID + ')'));
+    const server = app.listen(PORT, '0.0.0.0', () => console.log('CommonCents listening on :' + PORT + ' (build ' + BUILD_ID + ', trusting X-Forwarded-For from ' + JSON.stringify(app.get('trust proxy')) + ')'));
     // `docker compose up -d` / `stop` sends SIGTERM: finish in-flight requests, close the
     // DB pool, exit 0. Without this Docker waits 10 s and then SIGKILLs the app.
     const shutdown = (signal) => {

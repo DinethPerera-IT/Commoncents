@@ -27,11 +27,12 @@
 - `npm ci` with the committed `package-lock.json` (exact versions every build). `npm audit`: **0 vulnerabilities**.
 
 ### Hardened
-- **Port 3040 is published on 127.0.0.1 only.** Caddy runs on the host, so it still reaches the app; the LAN and
-  tailnet can't go around Caddy any more. Uptime Kuma checks through Caddy instead (see README).
+- **Port 3040 stays open on the home network** (flatmates use `http://<server-ip>:3040`); Caddy also proxies
+  the `.internal` name to it.
 - **Login rate limit:** 10 failed attempts per 15 minutes per client IP (`express-rate-limit`). Successful
-  logins don't count. `trust proxy` = loopback + private ranges, because Caddy's requests arrive from the
-  Docker bridge gateway; that's only safe because of the loopback-only port.
+  logins don't count. `X-Forwarded-For` is trusted **only** from the Docker network gateway (where Caddy's
+  requests arrive) and loopback, found at startup from `/proc/net/route`. Trusting all private ranges would
+  let a LAN device send a fake `X-Forwarded-For` on every try and never hit the limit (tested both paths).
 - **Security headers** (`helmet`): Content-Security-Policy with no inline scripts (the service-worker
   registration moved to `public/sw-register.js`), `X-Content-Type-Options`, `frame-ancestors 'none'`, etc.
   Inline *styles* are still allowed: `app.js` uses `style="…"` ~150 times; moving them is Phase 4.
@@ -48,4 +49,5 @@
 - `staging/`: a throwaway copy of the app (own project, network and volumes, `127.0.0.1:3041`) restored from a
   backup. `staging/repro-reset-demo.sh` reproduces the reset-demo bug (fails on the old image, passes on the new);
   `staging/verify.sh` runs 20 checks: health, CSP, receipts across a rebuild, pay → undo, unpay, edit without a
-  date, the 429 on the 11th failed login, per-client limiting, and no SQL text in errors.
+  date, the 429 on the 11th failed login, per-client limiting, and no SQL text in errors. A LAN-device test with a
+  rotating fake `X-Forwarded-For` is still blocked on the 11th attempt.
