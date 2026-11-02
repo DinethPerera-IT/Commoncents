@@ -1,5 +1,49 @@
 # Changelog
 
+## 2.1.0: fresh UI, combined Fibre & Electricity account, date fix
+
+Version note: the previous release was 1.1.0; this goes straight to 2.1.0 (there was no 2.0.0).
+
+### Adopted: fresh UI and combined prepaid utilities (`upgrade/fresh-ui`)
+A ready-made upgrade, prepared separately and imported unchanged as its own commit; design notes in
+`docs/BALANCE_FIRST.md`, screenshots in `design/`.
+- New look across every screen (`industry.css`, `index.html`, `app.js`): balance-first dashboard, a sidebar
+  on desktop and a bottom bar on mobile (Home, Expenses, Record, Utilities, More). `controls.js`: password
+  show/hide, dialog keyboard focus and Escape, offline notice.
+- **Fibre & Electricity**: one shared prepaid account for both. Each top-up saves its own split between
+  flatmates when it is recorded (equal, percent or custom, exact to the cent), so later changes never rewrite
+  old top-ups. Usage only lowers the credit; it never moves money between flatmates. Credit can't go negative.
+  Routes moved to `server/utilities.js`; `PUT /api/prepaid/allocation` now always refuses (splits are per top-up).
+- Migration `004_prepaid_utilities.sql` (with code in `migrate.js`, same transaction):
+  - saves each existing top-up's split as the old account-wide rule calculated it, also in the activity log so
+    undo keeps working; existing discrepancies are frozen as they were, not silently redistributed;
+  - renames the account to "Fibre & Electricity" and **stops the monthly Electricity recurring bill**
+    (unpaid electricity bills stay, labelled as legacy);
+  - adds a `cash_outflows` view so reports, budgets and the new `spending.csv` / `utilities.csv` exports
+    count each top-up once.
+- `db.js`: inside `tx()`, the `q`/`one`/`all` helpers join the transaction automatically.
+- Rollback after 004 means restoring the pre-upgrade database backup; older code would recompute old
+  top-ups with the account-wide rule.
+- Note: the 004 data step calls `topupShares()` from `calc.js`; if that function changes, a fresh database
+  would migrate differently. Leave it alone or copy it into `migrate.js` before changing it.
+
+### Fixed: dates moved back a day when the server runs in New Zealand time
+- Postgres `DATE` values (calendar days) were turned into JS `Date` objects at *local* midnight, and
+  `toISOString()` then converted them to UTC. In Pacific/Auckland (UTC+12/13), local midnight is the previous
+  day in UTC, so edited expenses, CSV exports and statements showed every date one day early. It was hidden only
+  because the container runs in UTC (also behind README bug 1's fix).
+- `db.js` now keeps `DATE` columns as `'YYYY-MM-DD'` strings (`pg.types.setTypeParser(1082, …)`), and the
+  `toISOString()` workarounds on dates are gone (`toISODate`, `fibreStats`, `utilities.js`).
+- Proof: the full suite passes in UTC, Pacific/Auckland and America/Los_Angeles (`TZ=… test/run-integration.sh`);
+  before the fix 4 tests failed in Pacific/Auckland. New tests fail without the fix even in UTC.
+
+### Deployment changes
+- `docker-compose.yml`: `name: commoncents` pins the project name, so the live volumes are used whichever folder
+  Compose runs from (otherwise a copy run elsewhere would start on new, empty volumes).
+- Dockerfile: the app's code is readable but not writable by the app user; only `/app/data` is writable.
+  (The import made all of `/app` writable by it.) The optional `proxy_ca` build secret is unused here.
+- `server/utilities.js` rewritten for readability with the same behaviour.
+
 ## Phase 3: features (one branch each, stacked; Discord reminders skipped by choice)
 
 ### My statement (`feature/statement`)

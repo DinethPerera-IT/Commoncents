@@ -3,7 +3,7 @@
 [![CI](https://github.com/DinethPerera-IT/Commoncents/actions/workflows/ci.yml/badge.svg)](https://github.com/DinethPerera-IT/Commoncents/actions/workflows/ci.yml)
 
 A mobile-first shared-household expense-splitting and bill-tracking app: weekly rent,
-shared expenses with equal/custom/percentage splits, a prepaid fibre account, and a
+shared expenses with equal/custom/percentage splits, a shared prepaid Fibre & Electricity account, and a
 group settle-up flow — deployed and running on my homelab.
 
 Part of [homelab-infrastructure](https://github.com/DinethPerera-IT/homelab-infrastructure).
@@ -31,6 +31,11 @@ of a related team project.
 - Locked down the money math and the database: unit tests for every calculation, integration
   tests against a real Postgres, a numbered-migration system that took over the live database
   without re-creating it, and GitHub Actions CI.
+- Adopted a ready-made upgrade I did not write (the fresh UI and the combined Fibre &
+  Electricity account, see `docs/BALANCE_FIRST.md`): reviewed it against the live deployment
+  before using it, made sure it reuses the live database instead of an empty one, tested its
+  data migration on a copy of the real data first, found and fixed a time-zone date bug
+  (bug 6 below), and rewrote `server/utilities.js` so it reads like the rest of the server.
 
 This split is reflected honestly here rather than presented as a solo build — see
 `server/activity.js` and the edit/delete endpoints throughout `server/index.js` for the
@@ -40,7 +45,8 @@ part that's mine.
 
 - Weekly rent tracking per flatmate, with a live-updating balance view
 - Shared expenses with equal, custom-dollar, or percentage splits
-- A shared prepaid fibre/broadband account (top-ups and usage, allocated to flatmates)
+- One shared prepaid Fibre & Electricity account: each top-up saves its own split between
+  flatmates; usage only lowers the credit
 - Recurring bills with a "mark as paid" flow that auto-generates the corresponding
   shared expense
 - A settle-up screen showing exactly who owes who, and by how much
@@ -88,6 +94,12 @@ part that's mine.
    percentage splits could lose a cent ($10 at 33.33/33.33/33.34% = $9.99), `round2(1.005)`
    gave 1.00, and 1c debts were never settled. All money math now works in whole cents.
 
+6. **Dates moved back a day in New Zealand time.** Postgres `DATE` values (plain calendar days)
+   were turned into JS dates at local midnight, then converted to UTC for display. In NZ, local
+   midnight is still the previous day in UTC, so edits, CSV exports and statements were a day
+   early. It only stayed hidden because the container runs in UTC (bug 1's fix had it too).
+   Calendar dates now stay `YYYY-MM-DD` strings, and the tests run in three time zones.
+
 Bugs 1–3 were caught by running the actual sequence (pay a bill → undo it) against a real
 database before deployment, not by reading the code and assuming it worked. Bugs 4 and 5
 were found by the unit tests, written to state what *should* hold (shares add up, weeks start
@@ -106,6 +118,7 @@ curl -s localhost:3040/healthz   # {"ok":true,...}: the app and its database are
 - The app listens on port 3040 (home network); Caddy can proxy a local hostname to it.
 - **Tests:** `npm test` runs the unit tests; `test/run-integration.sh` runs everything,
   including the integration tests, against a disposable Postgres in Docker (as CI does).
+  `TZ=Pacific/Auckland test/run-integration.sh` runs them in another time zone.
 - **Schema changes** go in a new numbered file in `migrations/` (e.g. `003_add_budgets.sql`).
   On startup each new file runs once, in a transaction, and is recorded in `schema_migrations`.
 - **Test a change first:** `staging/up.sh` starts a separate copy on `127.0.0.1:3041`,
