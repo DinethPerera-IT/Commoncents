@@ -1,5 +1,10 @@
 # CommonCents — Dina's homelab deployment.
 # Port 3040 avoids the reserved set (80, 3000, 3001, 3005, 3010, 3020, 3030, 8080, 19999).
+# Fixed project name: volumes resolve to commoncents_db_data / commoncents_app_data from any
+# folder. Without it Compose names the project after the folder, and a copy run from elsewhere
+# would start on new, empty volumes.
+name: commoncents
+
 services:
   app:
     build: .
