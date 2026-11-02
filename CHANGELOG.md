@@ -1,5 +1,43 @@
 # Changelog
 
+## Phase 2: dev quality (branch `upgrade/quality`)
+
+### Tests
+- **Unit tests** (`test/calc.test.js`, built-in `node:test`, no new dependency) for every calculation:
+  equal and percentage splits (every amount from 1c to $50, 1–6 people), split validation, balances summing
+  to zero, settlement plans (2,000 random ledgers settle to the cent), top-up shares, week boundaries, and
+  the browser's date helpers under three time zones.
+- **Integration tests** (`test/integration.test.js`) against a real, throwaway Postgres: migrations (fresh,
+  baselined, failing-and-rolled-back), README bugs 1 and 2, the Phase 1 reset-demo cases, percentage splits
+  through the API, old week URLs, no SQL in errors, and the login limit. `test/run-integration.sh` runs it all
+  in Docker; the tests refuse any database whose name lacks "test".
+- **CI** (`.github/workflows/ci.yml`): Node 24 + a Postgres 16 service container run `npm ci` and `npm test`
+  on every push and pull request, plus a `docker build` check.
+
+### Bugs the tests found (and fixed)
+- **NZ dates.** `today()` was the server's UTC date: a day behind every NZ morning, so expenses got
+  yesterday's date and Monday's new rent week started at 1 pm. Now `Pacific/Auckland` (`APP_TZ` to change).
+  The browser was worse: local noon + `toISOString()` put every week start on the Saturday/Sunday before, in
+  NZ. Live data shows it: a real week's rent payments are stored under a Saturday "week". Both ends fixed; the server snaps week URLs to the nearest Monday, so phones still running the
+  old `app.js` stop creating stray weeks.
+- **Rounding.** Equal splits could give a negative share and be off by 2c; percentage splits could lose a
+  cent; custom splits accepted being 1c off; `round2(1.005)` was 1.00; 1c debts were never settled. All
+  money math now runs in whole cents (`toCents`, `percentSplit` with largest remainders).
+
+### Migrations
+- `migrations/NNN_name.sql` + `server/migrate.js` (~40 lines, handwritten): each file once, in order, in a
+  transaction, recorded in `schema_migrations`, under an advisory lock. Replaces "run SCHEMA.sql if the
+  tables are missing + ALTERs on every boot".
+- `001_baseline.sql` is the live schema exactly (proved by diffing `pg_dump --schema-only` of a database
+  built from it against live). On the live database it's recorded as applied, not run.
+- `002_rent_is_demo_default_false.sql`: the first real migration. `rent_records.is_demo` defaulted to true.
+- `SCHEMA.sql` is gone; `migrations/` is the single source of truth.
+
+### Other
+- `server/index.js` exports `app` and `start()`, and only listens when run directly (so tests can import it).
+- `.dockerignore` also skips `test/`, `staging/` and `.github/`.
+
+
 ## Phase 1: fix and harden (branch `upgrade/harden`)
 
 ### Found in Phase 0 (2026-11-02)

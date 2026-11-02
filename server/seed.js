@@ -1,42 +1,11 @@
-// First-run migration + seed. Idempotent: runs schema if tables missing, seeds if empty.
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+// Startup: bring the schema up to date, then seed a default household if the database is empty.
 import bcrypt from 'bcryptjs';
 import { q, one, all } from './db.js';
+import { migrate } from './migrate.js';
 import { weekStartOf, addDays, today, equalSplit, round2 } from './calc.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 export async function migrateAndSeed() {
-  const exists = await one("SELECT to_regclass('public.households') AS t");
-  if (!exists.t) {
-    const schema = fs.readFileSync(path.join(__dirname, '..', 'SCHEMA.sql'), 'utf8');
-    await q(schema);
-    console.log('[seed] schema created');
-  }
-
-  // Additive migration — runs every startup, safe on both fresh and already-running
-  // databases. Existing rent_records predate the is_demo column and were only ever
-  // written by the seed script, so they're correctly backfilled to is_demo=true here.
-  await q(`
-    ALTER TABLE rent_records ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT true;
-    CREATE TABLE IF NOT EXISTS activity_log (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      household_id UUID NOT NULL REFERENCES households(id),
-      user_id UUID REFERENCES users(id),
-      entity_type TEXT NOT NULL,
-      entity_id UUID,
-      action TEXT NOT NULL CHECK (action IN ('create','update','delete')),
-      summary TEXT NOT NULL,
-      before_data JSONB,
-      after_data JSONB,
-      undone BOOLEAN NOT NULL DEFAULT false,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS idx_activity_household ON activity_log (household_id, created_at DESC);
-  `);
-  console.log('[seed] migration check complete');
+  await migrate();   // schema changes live in migrations/*.sql (see server/migrate.js)
 
   const hh = await one('SELECT id FROM households LIMIT 1');
   if (hh) return;

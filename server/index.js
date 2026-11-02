@@ -12,7 +12,7 @@ import { migrateAndSeed, materialise } from './seed.js';
 import { login, logout, requireAuth, changePassword, publicUser } from './auth.js';
 import {
   weekStartOf, addDays, today, currentWeek, equalSplit, round2,
-  netBalances, settlementPlan, fibreStats, validateSplits, topupShares,
+  netBalances, settlementPlan, fibreStats, validateSplits, topupShares, percentSplit, nearestMonday,
 } from './calc.js';
 import { logActivity, recentActivity, undoActivity } from './activity.js';
 
@@ -178,8 +178,8 @@ app.post('/api/categories', wrap(async (req, res) => {
 
 // ---- weeks / rent ----
 app.get('/api/weeks/:weekStart/summary', wrap(async (req, res) => {
-  const ws = req.params.weekStart;
-  if (!isValidDate(ws)) return bad(res, 'INVALID_DATE', 'Bad week date.');
+  if (!isValidDate(req.params.weekStart)) return bad(res, 'INVALID_DATE', 'Bad week date.');
+  const ws = nearestMonday(req.params.weekStart);
   const we = addDays(ws, 7);
   const users = await all('SELECT * FROM users ORDER BY created_at');
   const rent = await all('SELECT * FROM rent_records WHERE week_start=$1', [ws]);
@@ -213,8 +213,8 @@ app.get('/api/weeks/:weekStart/summary', wrap(async (req, res) => {
   });
 }));
 app.put('/api/rent/:weekStart/:userId', wrap(async (req, res) => {
-  const ws = req.params.weekStart;
-  if (!isValidDate(ws)) return bad(res, 'INVALID_DATE', 'Bad week date.');
+  if (!isValidDate(req.params.weekStart)) return bad(res, 'INVALID_DATE', 'Bad week date.');
+  const ws = nearestMonday(req.params.weekStart);
   const paid = Number(req.body?.amount_paid);
   if (isNaN(paid) || paid < 0) return bad(res, 'INVALID_AMOUNT', 'Amount must be zero or more.');
   const u = await one('SELECT * FROM users WHERE id=$1', [req.params.userId]);
@@ -266,7 +266,7 @@ async function resolveSplits(method, amount, body, users) {
     return { splits: ids.map((id) => ({ user_id: id, share_amount: sh[id] })) };
   }
   if (method === 'percent' && splits) {
-    splits = splits.map((s) => ({ ...s, share_amount: round2(amount * (Number(s.share_percent) || 0) / 100) }));
+    splits = percentSplit(amount, splits);
   }
   const err = validateSplits(method, amount, splits);
   if (err) {
@@ -719,22 +719,29 @@ app.post('/api/admin/reset-demo', wrap(async (req, res) => {
 // SPA fallback
 app.get(/^(?!\/api\/).*/, (_req, res) => res.sendFile(path.join(PUBLIC, 'index.html')));
 
-const PORT = Number(process.env.PORT) || 3040;
-migrateAndSeed()
-  .then(materialise)
-  .then(() => {
-    const timer = setInterval(() => materialise().catch(console.error), 6 * 3600 * 1000);
-    const server = app.listen(PORT, '0.0.0.0', () => console.log('CommonCents listening on :' + PORT + ' (build ' + BUILD_ID + ', trusting X-Forwarded-For from ' + JSON.stringify(app.get('trust proxy')) + ')'));
-    // `docker compose up -d` / `stop` sends SIGTERM: finish in-flight requests, close the
-    // DB pool, exit 0. Without this Docker waits 10 s and then SIGKILLs the app.
-    const shutdown = (signal) => {
-      console.log(signal + ' received, shutting down');
-      clearInterval(timer);
-      server.close(() => pool.end().finally(() => process.exit(0)));
-      server.closeIdleConnections();
-      setTimeout(() => process.exit(1), 8000).unref();
-    };
-    process.once('SIGTERM', shutdown);
-    process.once('SIGINT', shutdown);
-  })
-  .catch((e) => { console.error('Startup failed:', e); process.exit(1); });
+export { app };
+
+// Start the server: bring the database up to date, then listen. Only when this file is run
+// directly (`node server/index.js`); the integration tests import `app` without listening.
+export async function start() {
+  const PORT = Number(process.env.PORT) || 3040;
+  await migrateAndSeed();
+  await materialise();
+  const timer = setInterval(() => materialise().catch(console.error), 6 * 3600 * 1000);
+  const server = app.listen(PORT, '0.0.0.0', () => console.log('CommonCents listening on :' + PORT + ' (build ' + BUILD_ID + ', trusting X-Forwarded-For from ' + JSON.stringify(app.get('trust proxy')) + ')'));
+  // `docker compose up -d` / `stop` sends SIGTERM: finish in-flight requests, close the
+  // DB pool, exit 0. Without this Docker waits 10 s and then SIGKILLs the app.
+  const shutdown = (signal) => {
+    console.log(signal + ' received, shutting down');
+    clearInterval(timer);
+    server.close(() => pool.end().finally(() => process.exit(0)));
+    server.closeIdleConnections();
+    setTimeout(() => process.exit(1), 8000).unref();
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  start().catch((e) => { console.error('Startup failed:', e); process.exit(1); });
+}

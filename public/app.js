@@ -7,9 +7,13 @@ const fmt = (n) => (n < 0 ? '-$' : '$') + Math.abs(Number(n) || 0).toFixed(2);
 const signed = (n) => (n >= 0 ? '+' : '\u2212') + '$' + Math.abs(Number(n) || 0).toFixed(2);
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const shortDate = (ds) => { const d = new Date(ds + 'T12:00:00'); return d.getDate() + ' ' + MONTHS[d.getMonth()]; };
-const today = () => new Date().toISOString().slice(0, 10);
-const weekStartOf = (ds) => { const d = new Date(ds + 'T12:00:00'); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
-const addDays = (ds, n) => { const d = new Date(ds + 'T12:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+// Dates are 'YYYY-MM-DD' strings. today() is the phone's own calendar date; the arithmetic is
+// done in UTC on both ends, so the browser's time zone can't shift a day. (Mixing local noon
+// with toISOString() made NZ browsers land a day early: weeks started on Sunday or Saturday.)
+const pad2 = (n) => String(n).padStart(2, '0');
+const today = () => { const d = new Date(); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
+const weekStartOf = (ds) => { const d = new Date(ds + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
+const addDays = (ds, n) => { const d = new Date(ds + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 
 const S = { me: null, members: [], categories: [], tab: 'dash', weekOff: 0, moreView: 'menu' };
 

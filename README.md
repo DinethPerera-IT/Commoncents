@@ -1,5 +1,7 @@
 # CommonCents
 
+[![CI](https://github.com/DinethPerera-IT/Commoncents/actions/workflows/ci.yml/badge.svg)](https://github.com/DinethPerera-IT/Commoncents/actions/workflows/ci.yml)
+
 A mobile-first shared-household expense-splitting and bill-tracking app: weekly rent,
 shared expenses with equal/custom/percentage splits, a prepaid fibre account, and a
 group settle-up flow — deployed and running on my homelab.
@@ -15,7 +17,7 @@ of a related team project.
 **My contribution, on top of that starting point:**
 - Deployed it to the homelab: Docker, Postgres, reverse-proxied via Caddy behind a
   Pi-hole-backed hostname.
-- Diagnosed and fixed two genuine backend bugs found during testing (see below).
+- Diagnosed and fixed real bugs found by testing (see below), and added the tests that keep them fixed.
 - Designed and built three feature additions from scratch, verified against a live
   database before deployment: full edit/delete support for every record type (expenses,
   bills, settlements, prepaid top-ups/usage), a corrected "reset demo data" flow, and a
@@ -26,6 +28,9 @@ of a related team project.
   endpoint with Docker healthchecks; clean shutdown on `docker compose up -d`; and a
   throwaway staging copy (`staging/`) for testing changes against a backup of the real
   database before they touch the live app.
+- Locked down the money math and the database: unit tests for every calculation, integration
+  tests against a real Postgres, a numbered-migration system that took over the live database
+  without re-creating it, and GitHub Actions CI.
 
 This split is reflected honestly here rather than presented as a solo build — see
 `server/activity.js` and the edit/delete endpoints throughout `server/index.js` for the
@@ -68,8 +73,20 @@ part that's mine.
    Reproduced on a staging copy of the live database first, then fixed: one transaction,
    references cleared before deletes, and SQL errors are no longer sent to the client.
 
-All three were caught by running the actual sequence (pay a bill → undo it) against a real
-database before deployment, not by reading the code and assuming it worked.
+4. **The app lived in UTC; the flat lives in New Zealand.** The server's "today" was the UTC
+   date, a day behind every NZ morning (so Monday's new rent week only started at 1 pm), and
+   the browser mixed local time with UTC so that in NZ every week started on a Saturday or
+   Sunday. That's how a real week's rent payments ended up stored under a "week" starting
+   on a Saturday, which no screen shows. Fixed on both ends; old week links are snapped to Monday.
+
+5. **Rounding.** An equal split could produce a negative share ($0.02 / 4 = 1c, 1c, 1c, −1c),
+   percentage splits could lose a cent ($10 at 33.33/33.33/33.34% = $9.99), `round2(1.005)`
+   gave 1.00, and 1c debts were never settled. All money math now works in whole cents.
+
+Bugs 1–3 were caught by running the actual sequence (pay a bill → undo it) against a real
+database before deployment, not by reading the code and assuming it worked. Bugs 4 and 5
+were found by the unit tests, written to state what *should* hold (shares add up, weeks start
+on Monday in NZ) rather than what the code happened to do.
 
 ## Running it
 
@@ -82,6 +99,10 @@ curl -s localhost:3040/healthz   # {"ok":true,...}: the app and its database are
 
 - Receipts live in the `app_data` volume and survive rebuilds; the database in `db_data`.
 - The app listens on port 3040 (home network); Caddy can proxy a local hostname to it.
+- **Tests:** `npm test` runs the unit tests; `test/run-integration.sh` runs everything,
+  including the integration tests, against a disposable Postgres in Docker (as CI does).
+- **Schema changes** go in a new numbered file in `migrations/` (e.g. `003_add_budgets.sql`).
+  On startup each new file runs once, in a transaction, and is recorded in `schema_migrations`.
 - **Test a change first:** `staging/up.sh` starts a separate copy on `127.0.0.1:3041`,
   restored from the newest backup in `~/backups/commoncents`; `staging/verify.sh` runs the
   checks. Remove it with `docker compose -f staging/compose.yml down -v`.

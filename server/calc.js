@@ -1,5 +1,13 @@
 // Business calculations — ported from the design prototype (commoncents-data.js).
-export const round2 = (n) => Math.round(n * 100) / 100;
+// Money is rounded via whole cents. n * 100 is not enough: 1.005 is stored as 1.00499999…,
+// so Math.round(1.005 * 100) gives 100. Shifting the decimal point in the string form
+// ('1.005e2' = 100.5) rounds the number as it was written. Halves round away from zero.
+export function toCents(n) {
+  const x = Math.abs(Number(n));
+  const c = String(x).includes('e') ? Math.round(x * 100) : Math.round(Number(x + 'e2'));
+  return Number(n) < 0 ? -c : c;
+}
+export const round2 = (n) => toCents(n) / 100;
 
 export function weekStartOf(dateStr) {
   const d = new Date(dateStr + 'T12:00:00Z');
@@ -7,20 +15,31 @@ export function weekStartOf(dateStr) {
   d.setUTCDate(d.getUTCDate() - day);
   return d.toISOString().slice(0, 10);
 }
+// The Monday a week URL means. Weeks always start on Monday, but older versions of the app
+// sent the Saturday or Sunday before it (a browser time-zone bug), so snap to the nearest
+// Monday: Sat/Sun → the following Monday, Tue–Thu → the Monday before.
+export const nearestMonday = (dateStr) => weekStartOf(addDays(dateStr, 3));
 export function addDays(dateStr, n) {
   const d = new Date(dateStr + 'T12:00:00Z');
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
 }
-export const today = () => new Date().toISOString().slice(0, 10);
-export const currentWeek = () => weekStartOf(today());
+// The household's calendar date. The server runs in UTC, and NZ is 12–13 h ahead, so a UTC
+// date is "yesterday" every NZ morning (and Monday's new rent week started at 1 pm).
+export const TIME_ZONE = process.env.APP_TZ || 'Pacific/Auckland';
+export const today = (now = new Date(), timeZone = TIME_ZONE) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+export const currentWeek = (now = new Date()) => weekStartOf(today(now));
 
+// Split in whole cents: everyone gets the same base, and the leftover cents (fewer than the
+// number of people) go one each to the last people in the list. Shares always add up to the
+// amount and never differ by more than 1c. ($100 / 3 = 33.33, 33.33, 33.34.)
 export function equalSplit(amount, ids) {
-  const per = round2(amount / ids.length);
+  const total = toCents(amount);
+  const base = Math.floor(total / ids.length);
+  const extra = total - base * ids.length;
   const shares = {};
-  ids.forEach((id, i) => {
-    shares[id] = i === ids.length - 1 ? round2(amount - per * (ids.length - 1)) : per;
-  });
+  ids.forEach((id, i) => { shares[id] = (base + (i >= ids.length - extra ? 1 : 0)) / 100; });
   return shares;
 }
 
@@ -66,12 +85,13 @@ export function topupShares(amount, users, method, allocations) {
   return equalSplit(amount, active.map((u) => u.id));
 }
 
-// Greedy minimal settlement plan (≤ n−1 payments).
+// Greedy minimal settlement plan (≤ n−1 payments), in whole cents so even a 1c debt is settled.
 export function settlementPlan(net) {
   const debtors = [], creditors = [];
   Object.entries(net).forEach(([id, v]) => {
-    if (v < -0.01) debtors.push({ id, amt: -v });
-    else if (v > 0.01) creditors.push({ id, amt: v });
+    const c = toCents(v);
+    if (c < 0) debtors.push({ id, amt: -c });
+    else if (c > 0) creditors.push({ id, amt: c });
   });
   debtors.sort((a, b) => b.amt - a.amt);
   creditors.sort((a, b) => b.amt - a.amt);
@@ -79,10 +99,10 @@ export function settlementPlan(net) {
   let i = 0, j = 0;
   while (i < debtors.length && j < creditors.length) {
     const pay = Math.min(debtors[i].amt, creditors[j].amt);
-    plan.push({ from: debtors[i].id, to: creditors[j].id, amount: round2(pay) });
+    plan.push({ from: debtors[i].id, to: creditors[j].id, amount: pay / 100 });
     debtors[i].amt -= pay; creditors[j].amt -= pay;
-    if (debtors[i].amt < 0.01) i++;
-    if (creditors[j].amt < 0.01) j++;
+    if (debtors[i].amt === 0) i++;
+    if (creditors[j].amt === 0) j++;
   }
   return plan;
 }
@@ -99,11 +119,24 @@ export function fibreStats(topups, usage) {
     est_depletion_date: addDays(currentWeek(), Math.min(3650, Math.round(weeksLeft * 7))) };
 }
 
+// Percent splits in whole cents: each person gets their percentage rounded down, then the
+// leftover cents go to the largest remainders. Shares add up to the amount exactly
+// ($10 at 33.33/33.33/33.34% = 3.33, 3.33, 3.34, not 3 × 3.33 = $9.99).
+export function percentSplit(amount, splits) {
+  const total = toCents(amount);
+  const raw = splits.map((s) => (total * (Number(s.share_percent) || 0)) / 100);
+  const out = raw.map(Math.floor);
+  let left = total - out.reduce((a, b) => a + b, 0);
+  const order = raw.map((r, i) => [r - Math.floor(r), i]).sort((a, b) => b[0] - a[0] || a[1] - b[1]);
+  for (let k = 0; left > 0 && k < order.length; k++, left--) out[order[k][1]] += 1;
+  return splits.map((s, i) => ({ ...s, share_amount: out[i] / 100 }));
+}
+
 export function validateSplits(method, amount, splits) {
   if (!splits || !splits.length) return 'MISSING_FIELD:splits';
   if (method === 'custom') {
-    const sum = splits.reduce((s, x) => s + (Number(x.share_amount) || 0), 0);
-    if (Math.abs(sum - amount) > 0.01) return 'SPLIT_MISMATCH';
+    const sum = splits.reduce((s, x) => s + toCents(Number(x.share_amount) || 0), 0);
+    if (sum !== toCents(amount)) return 'SPLIT_MISMATCH';   // exact to the cent, or balances drift
   }
   if (method === 'percent') {
     const sum = splits.reduce((s, x) => s + (Number(x.share_percent) || 0), 0);

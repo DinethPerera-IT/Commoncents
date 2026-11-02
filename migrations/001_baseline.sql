@@ -1,4 +1,6 @@
--- CommonCents — PostgreSQL schema (v1)
+-- 001: the baseline. The schema exactly as the live database had it on 2026-11-02
+-- (checked by diffing pg_dump --schema-only of a fresh database built from this file
+-- against the live one). On that existing database it is recorded as applied, not run.
 CREATE TABLE households (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
@@ -44,8 +46,10 @@ CREATE TABLE rent_records (
   amount_due NUMERIC(10,2) NOT NULL,
   amount_paid NUMERIC(10,2) NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'unpaid' CHECK (status IN ('paid','partial','unpaid')),
-  is_demo BOOLEAN NOT NULL DEFAULT false,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Added after launch (ALTER TABLE … ADD COLUMN, DEFAULT true backfilled the seeded weeks),
+  -- which is why it sits last. Its default is changed in 002.
+  is_demo BOOLEAN NOT NULL DEFAULT true,
   UNIQUE (user_id, week_start)
 );
 CREATE INDEX idx_rent_week ON rent_records (household_id, week_start);

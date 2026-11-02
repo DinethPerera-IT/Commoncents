@@ -8,7 +8,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY server ./server
 COPY public ./public
-COPY SCHEMA.sql ./
+COPY migrations ./migrations
 RUN mkdir -p /app/data && chown -R app:app /app/data
 USER app
 EXPOSE 3040

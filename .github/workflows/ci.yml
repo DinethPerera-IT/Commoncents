@@ -1,0 +1,41 @@
+# CI: every push and pull request runs all tests against a real Postgres 16 on Node 24,
+# then checks that the Docker image still builds.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cc
+          POSTGRES_PASSWORD: cc
+          POSTGRES_DB: cc_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cc -d cc_test"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+        env:
+          TEST_DATABASE_URL: postgres://cc:cc@localhost:5432/cc_test
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t commoncents:ci .
