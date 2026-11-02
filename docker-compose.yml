@@ -1,14 +1,20 @@
+# CommonCents — Dina's homelab deployment.
+# Port 3040 avoids the reserved set (80, 3000, 3001, 3005, 3010, 3020, 3030, 8080, 19999).
 services:
   app:
     build: .
-    container_name: commoncents-app
+    container_name: commoncents
     restart: unless-stopped
-    ports:
-      - "3040:3040"
     env_file: .env
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    ports:
+      - "3040:3040"   # Caddy proxies commoncents.home.internal -> localhost:3040
+    volumes:
+      - app_data:/app/data
     mem_limit: 512m
+    cpus: 1.0
 
   db:
     image: postgres:16-alpine
@@ -19,9 +25,16 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - commoncents-db-data:/var/lib/postgresql/data
-    # No host port published deliberately — only the app container needs
-    # to reach Postgres, and it does so over Docker's internal network.
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 512m
+    cpus: 0.5
+    # DB is not published to the host — reachable only on the compose network.
 
 volumes:
-  commoncents-db-data:
+  db_data:
+  app_data:
