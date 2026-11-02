@@ -157,7 +157,7 @@ export function settlementPlan(net) {
 export function fibreStats(topups, usage) {
   const up = topups.reduce((s,t) => s + toCents(t.amount), 0);
   const used = usage.reduce((s,t) => s + toCents(t.amount), 0);
-  const dates = usage.map(u => (u.usage_date instanceof Date ? u.usage_date.toISOString() : String(u.usage_date)).slice(0,10)).sort();
+  const dates = usage.map(u => String(u.usage_date).slice(0,10)).sort();
   const days = dates.length > 1 ? (new Date(dates.at(-1)) - new Date(dates[0])) / 86400000 : 0;
   const weekly = days >= 14 && dates.length >= 3 ? used / 100 / (days / 7) : null;
   return { total_topped_up: up / 100, total_used: used / 100, balance: (up-used)/100,

@@ -119,8 +119,9 @@ const wrap = (fn) => (req, res) => fn(req, res).catch((e) => {
 });
 const bad = (res, code, message, field) => res.status(400).json({ error: { code, message, field } });
 const isValidDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '') && !isNaN(Date.parse(d));
-// pg returns DATE columns as JS Date objects, not strings — normalise before validating/comparing.
-const toISODate = (v) => (v instanceof Date ? v.toISOString().slice(0, 10) : String(v || '').slice(0, 10));
+// DATE columns arrive as 'YYYY-MM-DD' strings (see db.js). Request values may carry a time
+// part ('2026-09-01T00:00:00Z' from older clients), so keep only the date.
+const toISODate = (v) => String(v || '').slice(0, 10);
 const hid = async () => (await one('SELECT id FROM households LIMIT 1')).id;
 
 // ---- auth ----

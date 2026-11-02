@@ -1,4 +1,11 @@
 import pg from 'pg';
+
+// Postgres DATE columns (type id 1082) are calendar days such as 2026-09-01, with no time or
+// time zone. By default pg turns them into JS Date objects at *local* midnight, and any later
+// .toISOString() converts that to UTC: in New Zealand (UTC+12/13) local midnight is still the
+// previous day in UTC, so every date would shift back one day. Keep them as 'YYYY-MM-DD'
+// strings instead; they compare, sort and print correctly in any server time zone.
+pg.types.setTypeParser(1082, (v) => v);
 import { AsyncLocalStorage } from 'node:async_hooks';
 const session = new AsyncLocalStorage();
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });

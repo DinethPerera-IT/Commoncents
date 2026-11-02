@@ -103,6 +103,19 @@ test('startup on an empty database: migrate, seed, login', { skip }, async () =>
   assert.equal(members.length, 4);
 });
 
+test('DATE columns come back as the same calendar day in New Zealand time', { skip }, async () => {
+  // Switch this process to NZ time (Node applies a TZ change immediately), so the test fails
+  // without the parser in db.js even when the suite itself runs in UTC.
+  const saved = process.env.TZ;
+  process.env.TZ = 'Pacific/Auckland';
+  try {
+    const { d } = (await pool.query("SELECT DATE '2026-09-01' AS d")).rows[0];
+    assert.equal(d, '2026-09-01');
+  } finally {
+    if (saved === undefined) delete process.env.TZ; else process.env.TZ = saved;
+  }
+});
+
 test('README bug 1: editing an expense without sending a date keeps its date', { skip }, async () => {
   const e = await one('SELECT id, expense_date::text AS d FROM expenses LIMIT 1');
   const r = await api('PATCH', '/api/expenses/' + e.id, { notes: 'edited without a date' });
