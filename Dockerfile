@@ -11,8 +11,9 @@ RUN --mount=type=secret,id=proxy_ca \
 COPY server ./server
 COPY public ./public
 COPY migrations ./migrations
-# Only the data folder is writable by the app user; its own code stays read-only to it.
-RUN mkdir -p /app/data && chown -R app:app /app/data
+# The app user can read its code (even if the checkout had strict file modes) but not change
+# it; only the data folder (receipts) is writable.
+RUN chmod -R a+rX,go-w /app && mkdir -p /app/data && chown -R app:app /app/data
 USER app
 EXPOSE 3040
 # Docker marks the container unhealthy if /healthz (app + database) stops answering.
