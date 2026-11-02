@@ -681,9 +681,27 @@ app.get('/api/reports/weekly', wrap(async (req, res) => {
   }
   res.json(out);
 }));
-app.get('/api/reports/by-member', wrap(async (_req, res) => {
+// Who paid for things, optionally for ?from (inclusive) to ?to (exclusive), like /categories.
+app.get('/api/reports/by-member', wrap(async (req, res) => {
+  const conds = [], params = [];
+  if (isValidDate(req.query.from)) { params.push(req.query.from); conds.push('e.expense_date >= $' + params.length); }
+  if (isValidDate(req.query.to)) { params.push(req.query.to); conds.push('e.expense_date < $' + params.length); }
   res.json(await all(
-    'SELECT u.id, u.name, COALESCE(SUM(e.amount),0) AS total FROM users u LEFT JOIN expenses e ON e.paid_by=u.id GROUP BY u.id, u.name ORDER BY u.created_at'));
+    'SELECT u.id, u.name, COALESCE(SUM(e.amount),0) AS total FROM users u LEFT JOIN expenses e ON e.paid_by=u.id' +
+    (conds.length ? ' AND ' + conds.join(' AND ') : '') + ' GROUP BY u.id, u.name ORDER BY u.created_at', params));
+}));
+// Spending per calendar month (excl. rent), the last ?months (default 6, max 24) up to this NZ month.
+app.get('/api/reports/monthly', wrap(async (req, res) => {
+  const n = Math.min(24, Math.max(1, Number(req.query.months) || 6));
+  const months = [today().slice(0, 7)];
+  while (months.length < n) {
+    const [y, m] = months[0].split('-').map(Number);
+    months.unshift(m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`);
+  }
+  const rows = await all(
+    "SELECT to_char(expense_date, 'YYYY-MM') AS month, SUM(amount) AS total FROM expenses WHERE expense_date >= $1 GROUP BY 1",
+    [months[0] + '-01']);
+  res.json(months.map((month) => ({ month, total: Number(rows.find((r) => r.month === month)?.total || 0) })));
 }));
 
 // ---- category budgets ----

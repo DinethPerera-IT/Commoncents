@@ -15,7 +15,7 @@ const today = () => { const d = new Date(); return d.getFullYear() + '-' + pad2(
 const weekStartOf = (ds) => { const d = new Date(ds + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
 const addDays = (ds, n) => { const d = new Date(ds + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 
-const S = { me: null, members: [], categories: [], tab: 'dash', weekOff: 0, moreView: 'menu' };
+const S = { me: null, members: [], categories: [], tab: 'dash', weekOff: 0, moreView: 'menu', repPeriod: 'month' };
 
 async function api(path, opts = {}) {
   const o = { credentials: 'same-origin', headers: {}, ...opts };
@@ -656,31 +656,62 @@ async function renderFibre() {
     });
   }));
 }
+// Report periods: [label, from (inclusive), to (exclusive)] as YYYY-MM-DD, '' = open-ended.
+function reportPeriods() {
+  const t = today(), m = t.slice(0, 7);
+  const shift = (ym, k) => { let [y, mo] = ym.split('-').map(Number); mo += k; while (mo < 1) { mo += 12; y--; } while (mo > 12) { mo -= 12; y++; } return y + '-' + pad2(mo); };
+  return {
+    month: ['This month', m + '-01', shift(m, 1) + '-01'],
+    last: ['Last month', shift(m, -1) + '-01', m + '-01'],
+    q: ['Last 3 months', shift(m, -2) + '-01', shift(m, 1) + '-01'],
+    year: ['This year', t.slice(0, 4) + '-01-01', (Number(t.slice(0, 4)) + 1) + '-01-01'],
+    all: ['All time', '', ''],
+  };
+}
 async function renderReports() {
-  const [cats, weekly, byMember] = await Promise.all([
-    api('/reports/categories'), api('/reports/weekly?weeks=9'), api('/reports/by-member'),
+  const periods = reportPeriods();
+  const key = periods[S.repPeriod] ? S.repPeriod : 'month';
+  const [, from, to] = periods[key];
+  const qs = '?' + new URLSearchParams({ ...(from ? { from } : {}), ...(to ? { to } : {}) });
+  const [cats, weekly, monthly, byMember] = await Promise.all([
+    api('/reports/categories' + qs), api('/reports/weekly?weeks=9'), api('/reports/monthly?months=6'), api('/reports/by-member' + qs),
   ]);
   const catRows = cats.categories.map((c) => ({ label: c.name, v: Number(c.total) }));
   if (cats.rent_collected) catRows.unshift({ label: 'Rent (collected)', v: cats.rent_collected });
   catRows.sort((a, b) => b.v - a.v);
   const maxC = Math.max(...catRows.map((c) => c.v), 1);
-  const maxW = Math.max(...weekly.map((w) => w.total), 1);
   const maxM = Math.max(...byMember.map((m) => Number(m.total)), 1);
-  const bars = (rows) => rows.map((r) =>
+  const bars = (rows) => rows.length ? rows.map((r) =>
     '<div><div style="display:flex;justify-content:space-between;font-size:12px;"><span>' + esc(r.label) + '</span><span class="cc-num">' + fmt(r.v) + '</span></div>' +
-    '<div class="cc-bar" style="margin-top:2px;"><div style="width:' + ((r.v / r.max) * 100).toFixed(0) + '%;"></div></div></div>').join('');
+    '<div class="cc-bar" style="margin-top:2px;"><div style="width:' + ((r.v / r.max) * 100).toFixed(0) + '%;"></div></div></div>').join('')
+    : '<div class="text-muted" style="font-size:13px;">Nothing in this period.</div>';
+  // Vertical bars with the value on top and a label underneath; the last bar (the current one) is highlighted.
+  const columns = (rows) => {
+    const max = Math.max(...rows.map((r) => r.v), 1);
+    return '<div style="display:flex;align-items:flex-end;gap:6px;height:120px;">' +
+      rows.map((r, i) => '<div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:3px;height:100%;">' +
+        '<div class="text-muted" style="font-size:10px;">$' + Math.round(r.v) + '</div>' +
+        '<div style="width:100%;border:1px solid var(--color-accent-600);background:' + (i === rows.length - 1 ? 'var(--color-accent)' : 'var(--color-accent-200)') +
+        ';height:' + Math.max(3, (r.v / max) * 100).toFixed(0) + '%;" title="' + esc(r.label) + ': ' + fmt(r.v) + '"></div>' +
+        '<div class="text-muted" style="font-size:10px;">' + esc(r.label) + '</div></div>').join('') + '</div>';
+  };
+  const total = catRows.filter((c) => !c.label.startsWith('Rent (')).reduce((s2, c) => s2 + c.v, 0);
   view().innerHTML = '<div style="display:flex;flex-direction:column;gap:16px;">' + backBtn +
     '<h4 style="margin:0;">Reports</h4>' +
-    card('<div class="card-kicker">Spending by category \u2014 all time</div>' + bars(catRows.map((c) => ({ ...c, max: maxC }))), 'gap:8px;') +
+    '<div style="display:flex;gap:6px;flex-wrap:wrap;" role="group" aria-label="Report period">' +
+    Object.entries(periods).map(([k, [label]]) => '<button class="btn ' + (k === key ? 'btn-primary' : 'btn-secondary') + ' rep-p" data-k="' + k +
+      '" aria-pressed="' + (k === key) + '" style="min-height:44px;font-size:12px;">' + label + '</button>').join('') + '</div>' +
+    card('<div class="card-kicker">Spending by category — ' + esc(periods[key][0].toLowerCase()) + '</div>' +
+      '<div class="cc-num" style="font-size:22px;">' + fmt(total) + ' <span class="text-muted" style="font-size:12px;font-weight:400;">excl. rent</span></div>' +
+      bars(catRows.map((c) => ({ ...c, max: maxC }))), 'gap:8px;') +
+    card('<div class="card-kicker">Paid by flatmate — ' + esc(periods[key][0].toLowerCase()) + '</div>' +
+      bars(byMember.filter((m) => Number(m.total) > 0).map((m) => ({ label: m.name, v: Number(m.total), max: maxM }))), 'gap:8px;') +
+    card('<div class="card-kicker">Monthly spending (excl. rent)</div>' +
+      columns(monthly.map((m) => ({ label: MONTHS[Number(m.month.slice(5)) - 1], v: m.total }))), 'gap:8px;') +
     card('<div class="card-kicker">Weekly spending (excl. rent)</div>' +
-      '<div style="display:flex;align-items:flex-end;gap:6px;height:110px;">' +
-      weekly.map((w, i) => '<div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:3px;height:100%;">' +
-        '<div class="text-muted" style="font-size:9px;">$' + Math.round(w.total) + '</div>' +
-        '<div style="width:100%;border:1px solid var(--color-accent-600);background:' + (i === weekly.length - 1 ? 'var(--color-accent)' : 'var(--color-accent-200)') + ';height:' + Math.max(3, (w.total / maxW) * 100).toFixed(0) + '%;"></div>' +
-        '<div class="text-muted" style="font-size:9px;">' + shortDate(w.week_start).replace(' ', '/') + '</div></div>').join('') + '</div>', 'gap:8px;') +
-    card('<div class="card-kicker">Paid by flatmate \u2014 all time</div>' +
-      bars(byMember.map((m) => ({ label: m.name, v: Number(m.total), max: maxM }))), 'gap:8px;') + '</div>';
+      columns(weekly.map((w) => ({ label: shortDate(w.week_start).replace(' ', '/'), v: w.total }))), 'gap:8px;') + '</div>';
   wireBack();
+  view().querySelectorAll('.rep-p').forEach((el) => (el.onclick = () => { S.repPeriod = el.dataset.k; render(); }));
 }
 async function renderExport() {
   const files = [['expenses', 'Expenses', 'every expense, with each person’s share'],

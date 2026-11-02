@@ -2,6 +2,11 @@
 
 ## Phase 3: features (one branch each, stacked; Discord reminders skipped by choice)
 
+### Reports (`feature/reports`)
+- The charts already existed (the plan assumed only the API did). Added a **period picker** (this month, last
+  month, last 3 months, this year, all time) for the category and per-person charts, a total, and a
+  **monthly trend** chart (`GET /api/reports/monthly?months=N`). `/api/reports/by-member` takes `from`/`to`.
+
 ### Category budgets (`feature/budgets`)
 - Migration `003_category_budgets.sql`: an optional monthly budget per category. Spending is always computed
   from expenses (calendar month, NZ), never stored, so it can't drift.

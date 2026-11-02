@@ -255,3 +255,24 @@ test('budgets: validation, unknown category, and admin only', { skip }, async ()
   assert.equal((await api('GET', '/api/budgets')).status, 200);   // everyone can look
   cookie = saved;
 });
+
+// ---- feature: reports --------------------------------------------------------------------
+test('reports: monthly trend ends with this month and matches the expenses', { skip }, async () => {
+  const r = await api('GET', '/api/reports/monthly?months=3');
+  assert.equal(r.status, 200);
+  assert.equal(r.body.length, 3);
+  const { today } = await import('../server/calc.js');
+  assert.equal(r.body[2].month, today().slice(0, 7));
+  for (const m of r.body) {
+    const want = Number((await one("SELECT COALESCE(SUM(amount),0) AS s FROM expenses WHERE to_char(expense_date,'YYYY-MM')=$1", [m.month])).s);
+    assert.equal(m.total, want, m.month);
+  }
+});
+
+test('reports: by-member honours the period (from inclusive, to exclusive)', { skip }, async () => {
+  const r = await api('GET', '/api/reports/by-member?from=2026-10-15&to=2026-10-16');
+  const want = await db.query(`SELECT u.name, COALESCE(SUM(e.amount),0)::float AS t FROM users u LEFT JOIN expenses e
+                               ON e.paid_by=u.id AND e.expense_date='2026-10-15' GROUP BY u.name`);
+  for (const row of want.rows) assert.equal(Number(r.body.find((m) => m.name === row.name).total), row.t, row.name);
+  assert.ok(Number(r.body.find((m) => m.name === 'Sihas').total) >= 9.99);   // the CSV test's expense
+});
