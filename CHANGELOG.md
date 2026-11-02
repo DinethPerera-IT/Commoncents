@@ -1,5 +1,14 @@
 # Changelog
 
+## Phase 3: features (one branch each, stacked; Discord reminders skipped by choice)
+
+### CSV export (`feature/csv-export`)
+- More → **Export to spreadsheet**: expenses (with a column per person's share), settlements and rent, for
+  any date range (inclusive) or everything. `GET /api/export/{expenses,settlements,rent}.csv`.
+- Safe to open in Excel: text starting with `= + - @` gets a leading `'` so it can't run as a formula
+  ("CSV injection"); a UTF-8 BOM keeps names like Pak’nSave intact. Read-only, so nothing to undo.
+
+
 ## Phase 2: dev quality (branch `upgrade/quality`)
 
 ### Tests

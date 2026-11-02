@@ -487,12 +487,14 @@ async function renderMore() {
   if (S.moreView === 'fibre') return renderFibre();
   if (S.moreView === 'reports') return renderReports();
   if (S.moreView === 'activity') return renderActivity();
+  if (S.moreView === 'export') return renderExport();
   const prepaid = await api('/prepaid');
   const items = [
     ['members', 'Household members', 'Names, weekly rent, active status'],
     ['fibre', 'Fibre prepaid', fmt(prepaid.balance) + ' remaining'],
     ['reports', 'Reports', 'Category, weekly & monthly spending'],
     ['activity', 'Activity & undo', 'Recent changes, with undo'],
+    ['export', 'Export to spreadsheet', 'Expenses, settlements and rent as CSV'],
   ];
   view().innerHTML = '<div style="display:flex;flex-direction:column;gap:16px;">' +
     items.map(([id, label, sub]) =>
@@ -634,6 +636,27 @@ async function renderReports() {
     card('<div class="card-kicker">Paid by flatmate \u2014 all time</div>' +
       bars(byMember.map((m) => ({ label: m.name, v: Number(m.total), max: maxM }))), 'gap:8px;') + '</div>';
   wireBack();
+}
+async function renderExport() {
+  const files = [['expenses', 'Expenses', 'every expense, with each person’s share'],
+    ['settlements', 'Settlements', 'who paid who back'], ['rent', 'Rent', 'due and paid, per person per week']];
+  view().innerHTML = '<div style="display:flex;flex-direction:column;gap:16px;">' + backBtn +
+    '<h4 style="margin:0;">Export to spreadsheet</h4>' +
+    '<div class="card-meta">CSV files open in Excel, Google Sheets or Numbers. Leave the dates empty for everything.</div>' +
+    card('<div style="display:flex;gap:12px;flex-wrap:wrap;">' +
+      '<div style="flex:1;min-width:140px;">' + field('From', input('', 'type="date" id="exFrom"')) + '</div>' +
+      '<div style="flex:1;min-width:140px;">' + field('To (inclusive)', input('', 'type="date" id="exTo"')) + '</div></div>', 'gap:8px;') +
+    files.map(([id, label, sub]) => '<a class="btn btn-secondary btn-block ex-link" data-id="' + id + '" download ' +
+      'style="min-height:52px;display:flex;flex-direction:column;justify-content:center;text-decoration:none;">' +
+      '<span>Download ' + label + ' (.csv)</span><span class="text-muted" style="font-size:11px;">' + sub + '</span></a>').join('') + '</div>';
+  wireBack();
+  const update = () => {
+    const qs = new URLSearchParams();
+    if ($('#exFrom').value) qs.set('from', $('#exFrom').value);
+    if ($('#exTo').value) qs.set('to', $('#exTo').value);
+    view().querySelectorAll('.ex-link').forEach((a) => (a.href = '/api/export/' + a.dataset.id + '.csv' + (qs.size ? '?' + qs : '')));
+  };
+  $('#exFrom').onchange = update; $('#exTo').onchange = update; update();
 }
 async function renderActivity() {
   const rows = await api('/activity?limit=40');

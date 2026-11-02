@@ -15,6 +15,7 @@ import {
   netBalances, settlementPlan, fibreStats, validateSplits, topupShares, percentSplit, nearestMonday,
 } from './calc.js';
 import { logActivity, recentActivity, undoActivity } from './activity.js';
+import { toCsv } from './csv.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
@@ -683,6 +684,52 @@ app.get('/api/reports/weekly', wrap(async (req, res) => {
 app.get('/api/reports/by-member', wrap(async (_req, res) => {
   res.json(await all(
     'SELECT u.id, u.name, COALESCE(SUM(e.amount),0) AS total FROM users u LEFT JOIN expenses e ON e.paid_by=u.id GROUP BY u.id, u.name ORDER BY u.created_at'));
+}));
+
+// ---- CSV export (e.g. for end-of-tenancy splits) ----
+// ?from=YYYY-MM-DD&to=YYYY-MM-DD, both optional and both inclusive.
+function exportRange(req, col) {
+  const conds = [], params = [];
+  if (isValidDate(req.query.from)) { params.push(req.query.from); conds.push(col + ' >= $' + params.length); }
+  if (isValidDate(req.query.to)) { params.push(req.query.to); conds.push(col + ' <= $' + params.length); }
+  const label = (isValidDate(req.query.from) ? req.query.from : 'start') + '_to_' + (isValidDate(req.query.to) ? req.query.to : today());
+  return { where: conds.length ? ' WHERE ' + conds.join(' AND ') : '', params, label };
+}
+function sendCsv(res, name, label, header, rows) {
+  res.set({
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': `attachment; filename="commoncents-${name}-${label}.csv"`,
+    'Cache-Control': 'no-store',
+  }).send(toCsv(header, rows));
+}
+const money = (v) => Number(v);
+app.get('/api/export/expenses.csv', wrap(async (req, res) => {
+  const { where, params, label } = exportRange(req, 'e.expense_date');
+  const users = await all('SELECT id, name FROM users ORDER BY created_at');
+  const rows = await all(
+    'SELECT e.*, c.name AS category, u.name AS payer FROM expenses e JOIN categories c ON c.id=e.category_id ' +
+    'JOIN users u ON u.id=e.paid_by' + where + ' ORDER BY e.expense_date, e.created_at', params);
+  const splits = await all('SELECT expense_id, user_id, share_amount FROM expense_splits WHERE expense_id = ANY($1::uuid[])', [rows.map((r) => r.id)]);
+  const share = (eid, uid) => { const x = splits.find((s) => s.expense_id === eid && s.user_id === uid); return x ? money(x.share_amount) : 0; };
+  sendCsv(res, 'expenses', label,
+    ['Date', 'Description', 'Category', 'Amount', 'Paid by', 'Split', 'Status', 'Shared', 'Notes', ...users.map((u) => u.name + ' share')],
+    rows.map((e) => [toISODate(e.expense_date), e.description, e.category, money(e.amount), e.payer, e.split_method, e.status,
+      e.is_shared ? 'yes' : 'no', e.notes, ...users.map((u) => share(e.id, u.id))]));
+}));
+app.get('/api/export/settlements.csv', wrap(async (req, res) => {
+  const { where, params, label } = exportRange(req, 's.settled_on');
+  const rows = await all(
+    'SELECT s.*, p.name AS payer_name, r.name AS recipient_name FROM settlements s JOIN users p ON p.id=s.payer ' +
+    'JOIN users r ON r.id=s.recipient' + where + ' ORDER BY s.settled_on', params);
+  sendCsv(res, 'settlements', label, ['Date', 'From', 'To', 'Amount', 'Method', 'Status', 'Notes'],
+    rows.map((s) => [toISODate(s.settled_on), s.payer_name, s.recipient_name, money(s.amount), s.method, s.status, s.notes]));
+}));
+app.get('/api/export/rent.csv', wrap(async (req, res) => {
+  const { where, params, label } = exportRange(req, 'r.week_start');
+  const rows = await all(
+    'SELECT r.*, u.name FROM rent_records r JOIN users u ON u.id=r.user_id' + where + ' ORDER BY r.week_start, u.created_at', params);
+  sendCsv(res, 'rent', label, ['Week starting', 'Member', 'Due', 'Paid', 'Status'],
+    rows.map((r) => [toISODate(r.week_start), r.name, money(r.amount_due), money(r.amount_paid), r.status]));
 }));
 
 // ---- activity / undo ----

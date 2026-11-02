@@ -183,3 +183,38 @@ test('login rate limit: the 11th failed attempt from one client is refused', { s
   assert.equal((await attempt('203.0.113.6')).status, 401);   // someone else is unaffected
   cookie = saved;
 });
+
+// ---- feature: CSV export ----------------------------------------------------------------
+test('CSV export: needs login, downloads every expense with shares, neutralises formulas', { skip }, async () => {
+  const saved = cookie; cookie = null;
+  assert.equal((await api('GET', '/api/export/expenses.csv')).status, 401);
+  cookie = saved;
+  const evil = await api('POST', '/api/expenses', {
+    description: '=HYPERLINK("http://example.invalid","x")', amount: 9.99, expense_date: '2026-10-15',
+    category: 'Groceries', paid_by: id('Sihas'),
+  });
+  assert.equal(evil.status, 200);
+  const r = await fetch(base + '/api/export/expenses.csv', { headers: { Cookie: cookie } });
+  assert.equal(r.status, 200);
+  assert.match(r.headers.get('content-type'), /^text\/csv/);
+  assert.match(r.headers.get('content-disposition'), /attachment; filename="commoncents-expenses-start_to_\d{4}-\d{2}-\d{2}\.csv"/);
+  const bytes = Buffer.from(await r.arrayBuffer());
+  assert.deepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf]);   // UTF-8 BOM, for Excel
+  const lines = bytes.subarray(3).toString('utf8').trimEnd().split('\r\n');
+  assert.match(lines[0], /^Date,Description,Category,Amount,Paid by,Split,Status,Shared,Notes,Dineth share,Dominic share,Yesith share,Sihas share$/);
+  assert.equal(lines.length - 1, (await one('SELECT count(*)::int AS n FROM expenses')).n);
+  const row = lines.find((l) => l.includes('HYPERLINK'));
+  assert.ok(row.startsWith('2026-10-15,"\'=HYPERLINK('), row);
+  assert.match(row, /,9\.99,Sihas,equal,pending,yes,,2\.49,2\.5,2\.5,2\.5$/);
+});
+
+test('CSV export: date range is inclusive at both ends', { skip }, async () => {
+  const fromTo = async (q) => (await (await fetch(base + '/api/export/expenses.csv' + q, { headers: { Cookie: cookie } })).text())
+    .trimEnd().split('\r\n').slice(1);
+  const rows = await fromTo('?from=2026-10-15&to=2026-10-15');
+  assert.ok(rows.length >= 1 && rows.every((l) => l.startsWith('2026-10-15,')), rows.join('\n'));
+  for (const name of ['settlements', 'rent']) {
+    const r = await fetch(base + `/api/export/${name}.csv?from=2026-01-01`, { headers: { Cookie: cookie } });
+    assert.equal(r.status, 200, name);
+  }
+});
