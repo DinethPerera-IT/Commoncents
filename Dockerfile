@@ -11,7 +11,8 @@ RUN --mount=type=secret,id=proxy_ca \
 COPY server ./server
 COPY public ./public
 COPY migrations ./migrations
-RUN mkdir -p /app/data && chown -R app:app /app
+# Only the data folder is writable by the app user; its own code stays read-only to it.
+RUN mkdir -p /app/data && chown -R app:app /app/data
 USER app
 EXPOSE 3040
 # Docker marks the container unhealthy if /healthz (app + database) stops answering.
