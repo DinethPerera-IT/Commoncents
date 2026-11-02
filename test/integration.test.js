@@ -218,3 +218,40 @@ test('CSV export: date range is inclusive at both ends', { skip }, async () => {
     assert.equal(r.status, 200, name);
   }
 });
+
+// ---- feature: category budgets ----------------------------------------------------------
+test('budgets: set, show spending for the month, change, remove, and undo each step', { skip }, async () => {
+  const groceries = (await one("SELECT id FROM categories WHERE name='Groceries'")).id;
+  const month = '2026-10';
+  const spentInOct = Number((await one(`SELECT COALESCE(SUM(amount),0) AS s FROM expenses WHERE category_id=$1
+                                        AND expense_date >= '2026-10-01' AND expense_date < '2026-11-01'`, [groceries])).s);
+  const get = async () => (await api('GET', '/api/budgets?month=' + month)).body.budgets.find((b) => b.category_id === groceries);
+  assert.equal((await get()).monthly_amount, null);
+
+  const set = await api('PUT', '/api/budgets/' + groceries, { monthly_amount: 600 });
+  assert.equal(set.status, 200);
+  assert.deepEqual(await get(), { category_id: groceries, category: 'Groceries', monthly_amount: 600, spent: spentInOct });
+  const change = await api('PUT', '/api/budgets/' + groceries, { monthly_amount: 450.5 });
+  assert.equal((await get()).monthly_amount, 450.5);
+  const remove = await api('PUT', '/api/budgets/' + groceries, { monthly_amount: null });
+  assert.equal((await get()).monthly_amount, null);
+
+  assert.equal((await api('POST', `/api/activity/${remove.body.activity_id}/undo`)).status, 200);
+  assert.equal((await get()).monthly_amount, 450.5);
+  assert.equal((await api('POST', `/api/activity/${change.body.activity_id}/undo`)).status, 200);
+  assert.equal((await get()).monthly_amount, 600);
+  assert.equal((await api('POST', `/api/activity/${set.body.activity_id}/undo`)).status, 200);
+  assert.equal((await get()).monthly_amount, null);
+});
+
+test('budgets: validation, unknown category, and admin only', { skip }, async () => {
+  const cat = (await one('SELECT id FROM categories LIMIT 1')).id;
+  assert.equal((await api('PUT', '/api/budgets/' + cat, { monthly_amount: -5 })).status, 400);
+  assert.equal((await api('PUT', '/api/budgets/not-a-uuid', { monthly_amount: 5 })).status, 404);
+  const saved = cookie;
+  const login = await api('POST', '/api/auth/login', { name: 'Yesith', password: PASSWORD });
+  cookie = login.res.headers.get('set-cookie').split(';')[0];
+  assert.equal((await api('PUT', '/api/budgets/' + cat, { monthly_amount: 50 })).status, 403);
+  assert.equal((await api('GET', '/api/budgets')).status, 200);   // everyone can look
+  cookie = saved;
+});

@@ -2,6 +2,14 @@
 
 ## Phase 3: features (one branch each, stacked; Discord reminders skipped by choice)
 
+### Category budgets (`feature/budgets`)
+- Migration `003_category_budgets.sql`: an optional monthly budget per category. Spending is always computed
+  from expenses (calendar month, NZ), never stored, so it can't drift.
+- Dashboard: a **Budgets** card with a bar per budgeted category, marked "over by $x" when exceeded (only shown
+  once a budget exists). More → **Budgets**: the admin sets or clears amounts; everyone else can look.
+- `GET /api/budgets?month=YYYY-MM`, `PUT /api/budgets/:categoryId`. Every change goes through
+  `logActivity`, and undo (new `budget` case) restores the previous amount or removes a new budget.
+
 ### CSV export (`feature/csv-export`)
 - More → **Export to spreadsheet**: expenses (with a column per person's share), settlements and rent, for
   any date range (inclusive) or everything. `GET /api/export/{expenses,settlements,rent}.csv`.

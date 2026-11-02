@@ -146,11 +146,53 @@ function shell(contentHtml) {
 const view = () => $('#view');
 const spinner = '<div class="text-muted" style="padding:32px;text-align:center;font-size:13px;">Loading\u2026</div>';
 
+// ---------- budgets ----------
+const monthName = (m) => MONTHS[Number(m.slice(5, 7)) - 1] + ' ' + m.slice(0, 4);
+function budgetBar(b) {
+  const pct = (b.spent / b.monthly_amount) * 100;
+  const over = b.spent - b.monthly_amount;
+  return '<div><div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;"><span>' + esc(b.category) + '</span>' +
+    '<span class="cc-num">' + fmt(b.spent) + ' / ' + fmt(b.monthly_amount) +
+    (over > 0.005 ? ' <span class="tag tag-outline" style="font-size:10px;">over by ' + fmt(over) + '</span>' : '') + '</span></div>' +
+    '<div class="cc-bar" style="margin-top:2px;"><div style="width:' + Math.min(100, pct).toFixed(0) + '%;' +
+    (over > 0.005 ? 'background:var(--color-neutral-800);' : '') + '"></div></div></div>';
+}
+// Dashboard card: only shown once at least one budget is set.
+function budgetCard(data) {
+  const set = data.budgets.filter((b) => b.monthly_amount);
+  if (!set.length) return '';
+  return card('<div class="card-kicker">Budgets — ' + monthName(data.month) + '</div>' + set.map(budgetBar).join(''), 'gap:8px;');
+}
+async function renderBudgets() {
+  const data = await api('/budgets');
+  const admin = S.me.is_admin;
+  view().innerHTML = '<div style="display:flex;flex-direction:column;gap:16px;">' + backBtn +
+    '<h4 style="margin:0;">Budgets</h4>' +
+    '<div class="card-meta">A monthly limit per category. Spending counts every expense in that category this month (' +
+    monthName(data.month) + ').' + (admin ? ' Leave a box empty for no budget.' : ' Only the admin can change them.') + '</div>' +
+    card(data.budgets.map((b) => '<div class="cc-row" style="padding:8px 0;flex-wrap:wrap;">' +
+      '<div style="flex:1;min-width:140px;">' + (b.monthly_amount ? budgetBar(b)
+        : '<div style="font-size:13px;">' + esc(b.category) + '</div><div class="text-muted" style="font-size:12px;">' + fmt(b.spent) + ' this month · no budget</div>') + '</div>' +
+      (admin ? '<div style="display:flex;align-items:center;gap:4px;"><span class="text-muted" style="font-size:13px;">$</span>' +
+        input('bud-amt', 'type="number" inputmode="decimal" min="0" step="1" placeholder="none" value="' + (b.monthly_amount || '') +
+          '" data-id="' + b.category_id + '" aria-label="' + esc(b.category) + ' monthly budget" style="width:90px;"') +
+        '<span class="text-muted" style="font-size:12px;">/mo</span></div>' : '') +
+      '</div>').join(''), 'gap:0;') + '</div>';
+  wireBack();
+  view().querySelectorAll('.bud-amt').forEach((el) => (el.onchange = async () => {
+    try {
+      const r = await api('/budgets/' + el.dataset.id, { method: 'PUT', body: { monthly_amount: el.value === '' ? null : Number(el.value) } });
+      if (r.activity_id) toastUndo(el.value === '' ? 'Budget removed.' : 'Budget saved.', r.activity_id);
+      render();
+    } catch (e) { toast(e.message); }
+  }));
+}
+
 // ---------- dashboard ----------
 async function renderDash() {
   const ws = addDays(weekStartOf(today()), S.weekOff * 7);
-  const [sum, bal, prepaid, bills] = await Promise.all([
-    api('/weeks/' + ws + '/summary'), api('/balances'), api('/prepaid'), api('/bills'),
+  const [sum, bal, prepaid, bills, budgets] = await Promise.all([
+    api('/weeks/' + ws + '/summary'), api('/balances'), api('/prepaid'), api('/bills'), api('/budgets'),
   ]);
   const isCur = S.weekOff === 0;
   const myNet = bal.net[S.me.id] || 0;
@@ -188,6 +230,7 @@ async function renderDash() {
       'padding:20px;text-align:center;gap:4px;') +
     '<div class="cc-cards">' + cards.map(([l, v, s]) =>
       card('<div class="card-kicker">' + l + '</div><div class="cc-num" style="font-size:22px;">' + v + '</div><div class="card-meta">' + s + '</div>', 'gap:2px;min-height:84px;')).join('') + '</div>' +
+    budgetCard(budgets) +
     card('<div class="card-kicker" style="margin-bottom:8px;">Flatmate balances \u2014 week of ' + shortDate(ws) + '</div>' +
       S.members.map((m) => {
         const b = sum.by_member[m.id]; const n = bal.net[m.id] || 0;
@@ -488,11 +531,13 @@ async function renderMore() {
   if (S.moreView === 'reports') return renderReports();
   if (S.moreView === 'activity') return renderActivity();
   if (S.moreView === 'export') return renderExport();
+  if (S.moreView === 'budgets') return renderBudgets();
   const prepaid = await api('/prepaid');
   const items = [
     ['members', 'Household members', 'Names, weekly rent, active status'],
     ['fibre', 'Fibre prepaid', fmt(prepaid.balance) + ' remaining'],
     ['reports', 'Reports', 'Category, weekly & monthly spending'],
+    ['budgets', 'Budgets', 'Monthly limits per category'],
     ['activity', 'Activity & undo', 'Recent changes, with undo'],
     ['export', 'Export to spreadsheet', 'Expenses, settlements and rent as CSV'],
   ];

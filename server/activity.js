@@ -107,6 +107,16 @@ export async function undoActivity(activityId, actingUser) {
       }
       break;
     }
+    case 'budget': {
+      // entity_id is the category. No budget before → remove it; otherwise put the old amount back.
+      if (!before) await q('DELETE FROM category_budgets WHERE category_id=$1', [a.entity_id]);
+      else {
+        await q(`INSERT INTO category_budgets (category_id, household_id, monthly_amount) VALUES ($1,$2,$3)
+                 ON CONFLICT (category_id) DO UPDATE SET monthly_amount=EXCLUDED.monthly_amount, updated_at=now()`,
+          [a.entity_id, before.household_id, before.monthly_amount]);
+      }
+      break;
+    }
     default:
       throw { code: 'DB_ERROR', message: 'This action type cannot be undone.' };
   }

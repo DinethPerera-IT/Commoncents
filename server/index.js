@@ -686,6 +686,48 @@ app.get('/api/reports/by-member', wrap(async (_req, res) => {
     'SELECT u.id, u.name, COALESCE(SUM(e.amount),0) AS total FROM users u LEFT JOIN expenses e ON e.paid_by=u.id GROUP BY u.id, u.name ORDER BY u.created_at'));
 }));
 
+// ---- category budgets ----
+const isMonth = (m) => /^\d{4}-(0[1-9]|1[0-2])$/.test(m || '');
+const nextMonth = (m) => { const [y, mo] = m.split('-').map(Number); return mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, '0')}`; };
+// Every category with its budget (or null) and what was spent in that month (default: this month, NZ).
+app.get('/api/budgets', wrap(async (req, res) => {
+  const month = isMonth(req.query.month) ? req.query.month : today().slice(0, 7);
+  const rows = await all(
+    `SELECT c.id AS category_id, c.name AS category, b.monthly_amount,
+            COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.category_id=c.id
+                      AND e.expense_date >= $1 AND e.expense_date < $2), 0) AS spent
+     FROM categories c LEFT JOIN category_budgets b ON b.category_id=c.id ORDER BY c.sort, c.name`,
+    [month + '-01', nextMonth(month) + '-01']);
+  res.json({ month, budgets: rows.map((r) => ({ ...r, monthly_amount: r.monthly_amount === null ? null : Number(r.monthly_amount), spent: Number(r.spent) })) });
+}));
+// Set (amount > 0) or remove (0 / empty) a category's budget. Admin only; logged, so it can be undone.
+app.put('/api/budgets/:categoryId', wrap(async (req, res) => {
+  if (!req.user.is_admin) return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Admin only.' } });
+  const cat = await one('SELECT id, name FROM categories WHERE id=$1', [req.params.categoryId]).catch(() => null);
+  if (!cat) return res.status(404).json({ error: { code: 'MISSING_FIELD', message: 'No such category.' } });
+  const raw = req.body?.monthly_amount;
+  const amount = raw === null || raw === '' || raw === undefined ? 0 : round2(Number(raw));
+  if (isNaN(amount) || amount < 0) return bad(res, 'INVALID_AMOUNT', 'Enter a budget of $0 or more.', 'monthly_amount');
+  const before = await one('SELECT * FROM category_budgets WHERE category_id=$1', [cat.id]);
+  if (!amount && !before) return res.json({ ok: true });
+  let after = null;
+  if (amount) {
+    after = await one(
+      `INSERT INTO category_budgets (category_id, household_id, monthly_amount) VALUES ($1,$2,$3)
+       ON CONFLICT (category_id) DO UPDATE SET monthly_amount=EXCLUDED.monthly_amount, updated_at=now() RETURNING *`,
+      [cat.id, req.user.household_id, amount]);
+  } else {
+    await q('DELETE FROM category_budgets WHERE category_id=$1', [cat.id]);
+  }
+  const action = !before ? 'create' : amount ? 'update' : 'delete';
+  const summary = amount ? `Set ${cat.name} budget to $${amount.toFixed(2)}/month` : `Removed the ${cat.name} budget`;
+  const activity_id = await logActivity({
+    householdId: req.user.household_id, userId: req.user.id, entityType: 'budget', entityId: cat.id,
+    action, summary, before, after,
+  });
+  res.json({ ok: true, budget: after, activity_id });
+}));
+
 // ---- CSV export (e.g. for end-of-tenancy splits) ----
 // ?from=YYYY-MM-DD&to=YYYY-MM-DD, both optional and both inclusive.
 function exportRange(req, col) {
