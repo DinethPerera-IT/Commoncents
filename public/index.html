@@ -46,8 +46,6 @@ a:hover { color: var(--color-accent-800); }
 <body>
 <div id="app"></div>
 <script src="/app.js"></script>
-<script>
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(function () {});
-</script>
+<script src="/sw-register.js"></script>
 </body>
 </html>

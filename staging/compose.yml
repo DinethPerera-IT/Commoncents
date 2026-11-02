@@ -1,0 +1,17 @@
+# Throwaway staging copy of CommonCents: own project, network and volumes; loopback port 3041.
+name: ccstage
+services:
+  app:
+    image: ${APP_IMAGE:-ccstage-app:new}
+    build: ..
+    env_file: stage.env
+    depends_on: { db: { condition: service_healthy } }
+    ports: ["127.0.0.1:3041:3040"]
+    volumes: [app_data:/app/data]
+    stop_grace_period: 15s
+  db:
+    image: postgres:16-alpine
+    env_file: stage.env
+    volumes: [db_data:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U commoncents -d commoncents"], interval: 2s, timeout: 3s, retries: 30 }
+volumes: { app_data: {}, db_data: {} }

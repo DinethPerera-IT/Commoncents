@@ -1,11 +1,13 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import multer from 'multer';
+import helmet from 'helmet';
+import { rateLimit } from 'express-rate-limit';
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { q, one, all } from './db.js';
+import pool, { q, one, all, tx } from './db.js';
 import { migrateAndSeed, materialise } from './seed.js';
 import { login, logout, requireAuth, changePassword, publicUser } from './auth.js';
 import {
@@ -28,14 +30,76 @@ const upload = multer({
   fileFilter: (_r, f, cb) => cb(null, /^image\//.test(f.mimetype)),
 });
 
+const PUBLIC = path.join(__dirname, '..', 'public');
 const app = express();
 app.disable('x-powered-by');
+// Caddy (on the host) is the only way in, and it reaches the container from the Docker
+// bridge gateway, a private address. Trusting loopback + private ranges lets req.ip be the
+// real client from X-Forwarded-For, which the rate limiter needs. Safe only because the
+// port is published on 127.0.0.1, so nobody else can send a forged header.
+app.set('trust proxy', process.env.TRUST_PROXY || 'loopback, uniquelocal');
+app.use(helmet({
+  contentSecurityPolicy: {
+    useDefaults: false,
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],                     // no inline scripts at all
+      scriptSrcAttr: ["'none'"],
+      // app.js builds HTML with style="..." attributes (≈150); moving those out is Phase 4.
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+      imgSrc: ["'self'", 'data:'],
+      connectSrc: ["'self'"],
+      workerSrc: ["'self'"],
+      manifestSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      frameAncestors: ["'none'"],
+    },
+  },
+  strictTransportSecurity: false,               // the site is plain http behind Caddy
+}));
 app.use(express.json({ limit: '256kb' }));
 app.use(cookieParser());
-app.use(express.static(path.join(__dirname, '..', 'public')));
+
+// Service worker: its cache name carries a hash of the app shell, so every deploy that
+// changes app.js/css/html gets a new cache and the old one is deleted on activate.
+const SHELL_FILES = ['index.html', 'app.js', 'industry.css', 'sw-register.js', 'manifest.json'];
+const BUILD_ID = crypto.createHash('sha256')
+  .update(SHELL_FILES.map((f) => fs.readFileSync(path.join(PUBLIC, f))).join('\0'))
+  .digest('hex').slice(0, 10);
+const SW_SOURCE = fs.readFileSync(path.join(PUBLIC, 'sw.js'), 'utf8').replace('__BUILD_ID__', BUILD_ID);
+app.get('/sw.js', (_req, res) => {
+  res.set({ 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache' }).send(SW_SOURCE);
+});
+app.use(express.static(PUBLIC));
+
+// Health check for Docker and Uptime Kuma: no login, proves the app can reach Postgres.
+app.get('/healthz', async (_req, res) => {
+  try {
+    await q('SELECT 1');
+    res.set('Cache-Control', 'no-store').json({ ok: true, build: BUILD_ID });
+  } catch {
+    res.status(503).json({ ok: false });
+  }
+});
+
+// 10 login attempts per 15 min per client IP. Successful logins don't count, so a
+// flatmate who types the password right is never locked out by someone else's guesses.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  skipSuccessfulRequests: true,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { error: { code: 'RATE_LIMITED', message: 'Too many login attempts. Try again in 15 minutes.' } },
+});
 
 const wrap = (fn) => (req, res) => fn(req, res).catch((e) => {
-  if (e && e.code && e.message) return res.status(e.code === 'FORBIDDEN' ? 403 : e.code === 'MISSING_FIELD' ? 404 : 400).json({ error: e });
+  // App errors look like { code: 'FORBIDDEN', message }. Postgres errors also have code+message
+  // (code = SQLSTATE like '23503'): those are bugs, so log them and don't send SQL details out.
+  if (e && /^[A-Z_]+$/.test(e.code || '') && e.message) return res.status(e.code === 'FORBIDDEN' ? 403 : e.code === 'MISSING_FIELD' ? 404 : 400).json({ error: e });
   console.error(e);
   res.status(500).json({ error: { code: 'DB_ERROR', message: 'Something went wrong on the server.' } });
 });
@@ -46,7 +110,7 @@ const toISODate = (v) => (v instanceof Date ? v.toISOString().slice(0, 10) : Str
 const hid = async () => (await one('SELECT id FROM households LIMIT 1')).id;
 
 // ---- auth ----
-app.post('/api/auth/login', wrap(login));
+app.post('/api/auth/login', loginLimiter, wrap(login));
 app.post('/api/auth/logout', wrap(logout));
 app.get('/api/auth/members', wrap(async (_req, res) => {
   res.json(await all('SELECT name, initials FROM users WHERE active ORDER BY created_at'));
@@ -621,23 +685,44 @@ app.post('/api/activity/:id/undo', wrap(async (req, res) => {
 // ---- admin ----
 app.post('/api/admin/reset-demo', wrap(async (req, res) => {
   if (!req.user.is_admin) return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Admin only.' } });
-  await q('DELETE FROM expenses WHERE is_demo');
-  await q('DELETE FROM bills WHERE is_demo');
-  await q('DELETE FROM settlements WHERE is_demo');
-  await q('DELETE FROM prepaid_topups WHERE is_demo');
-  await q('DELETE FROM prepaid_usage WHERE is_demo');
-  await q('DELETE FROM rent_records WHERE is_demo');
+  await tx(async (c) => {
+    // Demo payments: demo expenses, plus the expense created when a demo bill was paid
+    // (POST /pay inserts it with is_demo=false, so it would otherwise survive as real data).
+    const demo = (await c.query(`SELECT id FROM expenses WHERE is_demo
+                                 UNION SELECT expense_id FROM bills WHERE is_demo AND expense_id IS NOT NULL`)).rows.map((r) => r.id);
+    // A real bill can't point at an expense that's about to go (bills_expense_id_fkey):
+    // clear the reference first and put the bill back to pending, the same order as /unpay.
+    await c.query(`UPDATE bills SET status='pending', paid_by=NULL, expense_id=NULL
+                   WHERE NOT is_demo AND expense_id = ANY($1::uuid[])`, [demo]);
+    await c.query('DELETE FROM bills WHERE is_demo');
+    await c.query('DELETE FROM expenses WHERE id = ANY($1::uuid[])', [demo]);
+    await c.query('DELETE FROM settlements WHERE is_demo');
+    await c.query('DELETE FROM prepaid_topups WHERE is_demo');
+    await c.query('DELETE FROM prepaid_usage WHERE is_demo');
+    await c.query('DELETE FROM rent_records WHERE is_demo');
+  });
   res.json({ ok: true, message: 'Demo data removed. Real data was kept — the app now starts fresh from this week.' });
 }));
 
 // SPA fallback
-app.get(/^(?!\/api\/).*/, (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
+app.get(/^(?!\/api\/).*/, (_req, res) => res.sendFile(path.join(PUBLIC, 'index.html')));
 
 const PORT = Number(process.env.PORT) || 3040;
 migrateAndSeed()
   .then(materialise)
   .then(() => {
-    setInterval(() => materialise().catch(console.error), 6 * 3600 * 1000);
-    app.listen(PORT, '0.0.0.0', () => console.log('CommonCents listening on :' + PORT));
+    const timer = setInterval(() => materialise().catch(console.error), 6 * 3600 * 1000);
+    const server = app.listen(PORT, '0.0.0.0', () => console.log('CommonCents listening on :' + PORT + ' (build ' + BUILD_ID + ')'));
+    // `docker compose up -d` / `stop` sends SIGTERM: finish in-flight requests, close the
+    // DB pool, exit 0. Without this Docker waits 10 s and then SIGKILLs the app.
+    const shutdown = (signal) => {
+      console.log(signal + ' received, shutting down');
+      clearInterval(timer);
+      server.close(() => pool.end().finally(() => process.exit(0)));
+      server.closeIdleConnections();
+      setTimeout(() => process.exit(1), 8000).unref();
+    };
+    process.once('SIGTERM', shutdown);
+    process.once('SIGINT', shutdown);
   })
   .catch((e) => { console.error('Startup failed:', e); process.exit(1); });

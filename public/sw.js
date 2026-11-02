@@ -1,6 +1,6 @@
 // CommonCents service worker — cache app shell, network-first for API.
-const SHELL = 'cc-shell-v1';
-const ASSETS = ['/', '/index.html', '/app.js', '/industry.css', '/manifest.json', '/icons/icon-180.png'];
+const SHELL = 'cc-shell-__BUILD_ID__';   // filled in by the server: a hash of the app shell
+const ASSETS = ['/', '/index.html', '/app.js', '/industry.css', '/sw-register.js', '/manifest.json', '/icons/icon-180.png'];
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(SHELL).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
 });

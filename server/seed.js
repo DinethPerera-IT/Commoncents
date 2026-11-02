@@ -191,4 +191,7 @@ export async function materialise() {
              VALUES ($1,$2,$3,$4,$5,$6,$7,'pending')`,
       [hh.id, r.id, r.category_id, r.name, r.expected_amount || 0, due, month]);
   }
+  // Expired logins are never valid again (requireAuth checks expires_at); drop them so the table doesn't grow forever.
+  const gone = await q('DELETE FROM sessions WHERE expires_at < now()');
+  if (gone.rowCount) console.log('[materialise] removed ' + gone.rowCount + ' expired sessions');
 }

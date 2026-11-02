@@ -1,0 +1,7 @@
+# Keep secrets, git history and local clutter out of the image build context.
+.env
+.env.*
+.git
+node_modules
+*.zip
+*.md
