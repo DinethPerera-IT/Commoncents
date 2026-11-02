@@ -2,6 +2,13 @@
 
 ## Phase 3: features (one branch each, stacked; Discord reminders skipped by choice)
 
+### My statement (`feature/statement`)
+- More → **My statement**: every shared expense, fibre top-up and settlement that moved a person's balance,
+  with a running balance, for any period (earlier items become the opening balance). Anyone's statement can be
+  viewed, like the balances screen. `GET /api/statement?member=&from=&to=`.
+- Built as a pure function (`statement()` in `calc.js`) with the same rules as `netBalances`; tests prove an
+  all-time statement ends at exactly each member's balance, to the cent.
+
 ### Recurring bills admin (`feature/recurring-bills`)
 - What `materialise()` already did: only **monthly** recurring bills generate bills (one pending bill per month,
   due on `DAY:n`, 15 if unset, max 28). Weekly (rent) is tracked as rent records and prepaid (fibre) in the

@@ -44,6 +44,11 @@ part that's mine.
 - Recurring bills with a "mark as paid" flow that auto-generates the corresponding
   shared expense
 - A settle-up screen showing exactly who owes who, and by how much
+- Monthly budgets per category, with progress on the dashboard
+- Reports by period (this month, last month, …) with monthly and weekly trends
+- A personal statement: everything that moved your balance, with a running total
+- CSV export of expenses (with each person's share), settlements and rent, safe to open in Excel
+- Admin screen for recurring bills (monthly ones create their bill automatically)
 - Full edit and delete on every record type
 - A complete activity log with undo — every create/edit/delete can be reversed, including
   correctly restoring child rows (e.g. an expense's splits) and reversing side effects

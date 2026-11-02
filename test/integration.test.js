@@ -333,3 +333,24 @@ test('recurring bills: validation and admin only', { skip }, async () => {
   assert.equal((await api('DELETE', '/api/recurring-bills/' + weekly.body.id)).status, 403);
   cookie = saved;
 });
+
+// ---- feature: statements -----------------------------------------------------------------
+test('statement: for every member, the all-time statement ends at their balance', { skip }, async () => {
+  const bal = (await api('GET', '/api/balances')).body.net;
+  for (const m of members) {
+    const st = await api('GET', '/api/statement?member=' + m.id);
+    assert.equal(st.status, 200);
+    assert.equal(Math.round(st.body.closing * 100), Math.round(bal[m.id] * 100), m.name);
+  }
+  const mine = await api('GET', '/api/statement');
+  assert.equal(mine.body.member.name, 'Dominic');   // default: whoever is logged in
+});
+
+test('statement: a period starts from the opening balance and only lists its own dates', { skip }, async () => {
+  const st = (await api('GET', `/api/statement?member=${id('Sihas')}&from=2026-10-15&to=2026-10-15`)).body;
+  assert.ok(st.entries.length >= 1);
+  assert.ok(st.entries.every((e) => e.date === '2026-10-15'));
+  const sum = st.entries.reduce((s, e) => s + Math.round(e.amount * 100), 0);
+  assert.equal(Math.round(st.closing * 100), Math.round(st.opening * 100) + sum);
+  assert.equal((await api('GET', '/api/statement?member=not-a-uuid')).status, 404);
+});

@@ -12,7 +12,7 @@ import { migrateAndSeed, materialise, ensureMonthlyBill } from './seed.js';
 import { login, logout, requireAuth, changePassword, publicUser } from './auth.js';
 import {
   weekStartOf, addDays, today, currentWeek, equalSplit, round2,
-  netBalances, settlementPlan, fibreStats, validateSplits, topupShares, percentSplit, nearestMonday,
+  netBalances, settlementPlan, fibreStats, validateSplits, topupShares, percentSplit, nearestMonday, statement,
 } from './calc.js';
 import { logActivity, recentActivity, undoActivity } from './activity.js';
 import { toCsv } from './csv.js';
@@ -702,6 +702,23 @@ app.get('/api/reports/monthly', wrap(async (req, res) => {
     "SELECT to_char(expense_date, 'YYYY-MM') AS month, SUM(amount) AS total FROM expenses WHERE expense_date >= $1 GROUP BY 1",
     [months[0] + '-01']);
   res.json(months.map((month) => ({ month, total: Number(rows.find((r) => r.month === month)?.total || 0) })));
+}));
+
+// ---- statements: one member's money in and out, with a running balance ----
+// ?member=<id> (default: you), ?from / ?to (inclusive). Same rules as /api/balances, so a
+// statement up to today always ends at that member's balance.
+app.get('/api/statement', wrap(async (req, res) => {
+  const memberId = req.query.member || req.user.id;
+  const member = await one('SELECT id, name FROM users WHERE id=$1', [memberId]).catch(() => null);
+  if (!member) return res.status(404).json({ error: { code: 'MISSING_FIELD', message: 'No such member.' } });
+  const inputs = await balanceInputs();
+  const dated = async (sql, col) => (await all(sql)).map((r) => ({ ...r, date: toISODate(r[col]) }));
+  inputs.expenses = await dated('SELECT id, amount, paid_by, is_shared, description, expense_date FROM expenses', 'expense_date');
+  inputs.topups = inputs.topups.map((t) => ({ ...t, date: toISODate(t.topup_date) }));
+  inputs.settlements = await dated('SELECT * FROM settlements', 'settled_on');
+  const from = isValidDate(req.query.from) ? req.query.from : undefined;
+  const to = isValidDate(req.query.to) ? req.query.to : undefined;
+  res.json({ member, from: from || null, to: to || null, ...statement(member.id, inputs, { from, to }) });
 }));
 
 // ---- recurring bills: admin create / edit / stop ----

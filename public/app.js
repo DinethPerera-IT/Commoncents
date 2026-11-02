@@ -15,7 +15,7 @@ const today = () => { const d = new Date(); return d.getFullYear() + '-' + pad2(
 const weekStartOf = (ds) => { const d = new Date(ds + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
 const addDays = (ds, n) => { const d = new Date(ds + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 
-const S = { me: null, members: [], categories: [], tab: 'dash', weekOff: 0, moreView: 'menu', repPeriod: 'month' };
+const S = { me: null, members: [], categories: [], tab: 'dash', weekOff: 0, moreView: 'menu', repPeriod: 'month', stPeriod: 'all', stMember: null };
 
 async function api(path, opts = {}) {
   const o = { credentials: 'same-origin', headers: {}, ...opts };
@@ -568,8 +568,10 @@ async function renderMore() {
   if (S.moreView === 'activity') return renderActivity();
   if (S.moreView === 'export') return renderExport();
   if (S.moreView === 'budgets') return renderBudgets();
+  if (S.moreView === 'statement') return renderStatement();
   const prepaid = await api('/prepaid');
   const items = [
+    ['statement', 'My statement', 'Everything you paid, owe and are owed'],
     ['members', 'Household members', 'Names, weekly rent, active status'],
     ['fibre', 'Fibre prepaid', fmt(prepaid.balance) + ' remaining'],
     ['reports', 'Reports', 'Category, weekly & monthly spending'],
@@ -748,6 +750,44 @@ async function renderReports() {
       columns(weekly.map((w) => ({ label: shortDate(w.week_start).replace(' ', '/'), v: w.total }))), 'gap:8px;') + '</div>';
   wireBack();
   view().querySelectorAll('.rep-p').forEach((el) => (el.onclick = () => { S.repPeriod = el.dataset.k; render(); }));
+}
+async function renderStatement() {
+  const periods = reportPeriods();
+  const key = periods[S.stPeriod] ? S.stPeriod : 'all';
+  const [, from, toExcl] = periods[key];
+  const memberId = S.stMember || S.me.id;
+  const qs = new URLSearchParams({ member: memberId, ...(from ? { from } : {}), ...(toExcl ? { to: addDays(toExcl, -1) } : {}) });
+  const st = await api('/statement?' + qs);
+  const you = memberId === S.me.id;
+  const who = you ? 'You' : st.member.name;
+  const verdict = (n) => n >= 0.005 ? (you ? 'you are owed ' : st.member.name + ' is owed ') + fmt(n)
+    : n <= -0.005 ? (you ? 'you owe ' : st.member.name + ' owes ') + fmt(-n) : 'all square';
+  view().innerHTML = '<div style="display:flex;flex-direction:column;gap:16px;">' + backBtn +
+    '<h4 style="margin:0;">' + (you ? 'My statement' : 'Statement — ' + esc(st.member.name)) + '</h4>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+    '<select class="input" id="stWho" aria-label="Whose statement" style="max-width:200px;min-height:44px;">' +
+    S.members.map((m) => '<option value="' + m.id + '"' + (m.id === memberId ? ' selected' : '') + '>' + esc(m.name) + (m.id === S.me.id ? ' (you)' : '') + '</option>').join('') + '</select>' +
+    Object.entries(periods).map(([k, [label]]) => '<button class="btn ' + (k === key ? 'btn-primary' : 'btn-secondary') + ' st-p" data-k="' + k +
+      '" aria-pressed="' + (k === key) + '" style="min-height:44px;font-size:12px;">' + label + '</button>').join('') + '</div>' +
+    card('<div class="card-kicker">' + esc(periods[key][0]) + '</div>' +
+      '<div class="cc-num" style="font-size:28px;">' + signed(st.closing) + '</div>' +
+      '<div class="text-muted" style="font-size:13px;">' + verdict(st.closing) + (toExcl ? ' at the end of this period' : '') + '</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:13px;margin-top:8px;">' +
+      (from ? '<span>Opening balance</span><span class="cc-num" style="text-align:right;">' + signed(st.opening) + '</span>' : '') +
+      '<span>' + who + ' paid (shared + settlements)</span><span class="cc-num" style="text-align:right;">' + fmt(st.totals.paid) + '</span>' +
+      '<span>' + (you ? 'Your' : esc(st.member.name) + '’s') + ' shares + money received</span><span class="cc-num" style="text-align:right;">' + fmt(st.totals.share) + '</span></div>', 'gap:4px;') +
+    card((st.entries.length ? st.entries.slice().reverse().map((e) =>
+      '<div class="cc-row" style="padding:9px 0;font-size:13px;gap:10px;">' +
+      '<div class="text-muted" style="width:46px;flex:none;font-size:12px;">' + shortDate(e.date) + '</div>' +
+      '<div style="flex:1;min-width:0;"><div>' + esc(e.text) + '</div><div class="text-muted" style="font-size:12px;">' + esc(e.note || '') + '</div></div>' +
+      '<div style="text-align:right;"><div class="cc-num ' + (e.amount >= 0 ? 'cc-pos' : 'cc-neg') + '">' + signed(e.amount) + '</div>' +
+      '<div class="text-muted" style="font-size:11px;">bal ' + signed(e.balance) + '</div></div></div>').join('')
+      : '<div class="text-muted" style="font-size:13px;">Nothing in this period.</div>') +
+      '<div class="card-meta" style="margin-top:6px;">Newest first. + means the household owes ' + (you ? 'you' : 'them') + ' more; − means ' +
+      (you ? 'you owe' : 'they owe') + ' more. Rent is tracked separately.</div>', 'gap:0;') + '</div>';
+  wireBack();
+  $('#stWho').onchange = (ev) => { S.stMember = ev.target.value; render(); };
+  view().querySelectorAll('.st-p').forEach((el) => (el.onclick = () => { S.stPeriod = el.dataset.k; render(); }));
 }
 async function renderExport() {
   const files = [['expenses', 'Expenses', 'every expense, with each person’s share'],

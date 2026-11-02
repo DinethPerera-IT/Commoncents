@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   round2, equalSplit, percentSplit, validateSplits, netBalances, settlementPlan, topupShares,
-  weekStartOf, addDays, today, nearestMonday,
+  weekStartOf, addDays, today, nearestMonday, statement,
 } from '../server/calc.js';
 
 const cents = (n) => Math.round(n * 100);
@@ -179,4 +179,44 @@ test('browser date helpers give the same answers in any time zone', async () => 
       { env: { ...process.env, TZ: tz } }).toString().trim();
     assert.equal(out, '2026-11-02 2026-11-02 2026-11-09 2026-11-02', tz);
   }
+});
+
+// ---- statements --------------------------------------------------------------------------
+function datedLedger() {
+  const l = ledger();
+  l.expenses.forEach((e, i) => (e.date = '2026-10-0' + (i + 1)));
+  l.expenses.forEach((e) => (e.description = 'expense ' + e.id));
+  l.topups.forEach((t) => (t.date = '2026-10-05'));
+  l.settlements.forEach((s, i) => { s.date = '2026-10-1' + i; s.id = 's' + i; s.method = 'bank_transfer'; });
+  return l;
+}
+
+test('statement: every member’s closing balance equals netBalances, to the cent', () => {
+  const l = datedLedger();
+  const net = netBalances(l);
+  for (const u of l.users) {
+    const st = statement(u.id, l);
+    assert.equal(cents(st.closing), cents(net[u.id]), u.id);
+    assert.equal(st.opening, 0);
+    assert.equal(cents(st.entries.at(-1)?.balance ?? 0), cents(net[u.id]), u.id);
+  }
+});
+
+test('statement: a date range turns earlier items into the opening balance', () => {
+  const l = datedLedger();
+  const full = statement('u0', l);
+  const part = statement('u0', l, { from: '2026-10-03', to: '2026-10-10' });
+  assert.ok(part.entries.every((e) => e.date >= '2026-10-03' && e.date <= '2026-10-10'));
+  const before = full.entries.filter((e) => e.date < '2026-10-03').reduce((s, e) => s + cents(e.amount), 0);
+  assert.equal(cents(part.opening), before);
+  assert.equal(cents(part.closing), before + part.entries.reduce((s, e) => s + cents(e.amount), 0));
+});
+
+test('statement: wording and signs from u0’s side', () => {
+  const st = statement('u0', datedLedger());
+  const e1 = st.entries.find((e) => e.id === 'e1');
+  assert.deepEqual([e1.paid, e1.share, e1.amount, e1.note], [100, 25, 75, 'you paid $100.00, your share $25.00']);
+  const got = st.entries.find((e) => e.kind === 'settlement');
+  assert.deepEqual([got.text, got.amount], ['someone paid you', -20]);   // test users have no names
+  assert.ok(!st.entries.some((e) => e.id === 'e3'));                 // not shared: not on the statement
 });

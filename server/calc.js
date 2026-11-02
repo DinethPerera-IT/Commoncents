@@ -70,6 +70,52 @@ export function netBalances({ users, expenses, splits, topups, allocations, allo
   return net;
 }
 
+// One member's statement: every item that moved their balance, oldest first, with the same rules
+// as netBalances (shared expenses, fibre top-ups, completed settlements; rent excluded), so the
+// last running balance is always exactly their net balance. `amount` is the effect on the balance:
+// + means the household owes them more, − means they owe more. Dates are 'YYYY-MM-DD'.
+// from/to (inclusive, optional) limit the listed entries; earlier items become the opening balance.
+export function statement(memberId, { users, expenses, splits, topups, allocations, allocationMethod, settlements }, { from, to } = {}) {
+  const name = (id) => users.find((u) => u.id === id)?.name || 'someone';
+  const items = [];
+  const shareOf = {};
+  splits.forEach((s) => { if (s.user_id === memberId) shareOf[s.expense_id] = toCents(s.share_amount); });
+  expenses.forEach((e) => {
+    if (!e.is_shared) return;
+    const paid = e.paid_by === memberId ? toCents(e.amount) : 0;
+    const share = shareOf[e.id] || 0;
+    if (!paid && !share) return;
+    items.push({ date: e.date, kind: 'expense', id: e.id, text: e.description, paid, share,
+      note: paid ? 'you paid ' + fmtCents(paid) + (share ? ', your share ' + fmtCents(share) : '') : name(e.paid_by) + ' paid; your share' });
+  });
+  topups.forEach((t) => {
+    const paid = t.paid_by === memberId ? toCents(t.amount) : 0;
+    const share = toCents(topupShares(Number(t.amount), users, allocationMethod, allocations)[memberId] || 0);
+    if (!paid && !share) return;
+    items.push({ date: t.date, kind: 'topup', id: t.id, text: 'Fibre top-up', paid, share,
+      note: paid ? 'you topped up ' + fmtCents(paid) + (share ? ', your share ' + fmtCents(share) : '') : name(t.paid_by) + ' topped up; your share' });
+  });
+  settlements.forEach((s) => {
+    if (s.status !== 'done') return;
+    if (s.payer === memberId) items.push({ date: s.date, kind: 'settlement', id: s.id, text: 'You paid ' + name(s.recipient), paid: toCents(s.amount), share: 0, note: s.method });
+    else if (s.recipient === memberId) items.push({ date: s.date, kind: 'settlement', id: s.id, text: name(s.payer) + ' paid you', paid: 0, share: toCents(s.amount), note: s.method });
+  });
+  items.sort((a, b) => a.date.localeCompare(b.date) || a.kind.localeCompare(b.kind));
+  let opening = 0, running = 0;
+  const entries = [];
+  const totals = { paid: 0, share: 0 };
+  for (const it of items) {
+    const effect = it.paid - it.share;
+    if (from && it.date < from) { opening += effect; running += effect; continue; }
+    if (to && it.date > to) continue;
+    running += effect;
+    totals.paid += it.paid; totals.share += it.share;
+    entries.push({ ...it, paid: it.paid / 100, share: it.share / 100, amount: effect / 100, balance: running / 100 });
+  }
+  return { opening: opening / 100, closing: running / 100, totals: { paid: totals.paid / 100, share: totals.share / 100 }, entries };
+}
+const fmtCents = (c) => '$' + (c / 100).toFixed(2);
+
 export function topupShares(amount, users, method, allocations) {
   const active = users.filter((u) => u.active);
   if (method === 'percent' && allocations.length) {
