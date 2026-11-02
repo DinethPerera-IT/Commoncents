@@ -97,8 +97,8 @@ export function statement(memberId, { users, expenses, splits, topups, allocatio
   });
   settlements.forEach((s) => {
     if (s.status !== 'done') return;
-    if (s.payer === memberId) items.push({ date: s.date, kind: 'settlement', id: s.id, text: 'You paid ' + name(s.recipient), paid: toCents(s.amount), share: 0, note: s.method });
-    else if (s.recipient === memberId) items.push({ date: s.date, kind: 'settlement', id: s.id, text: name(s.payer) + ' paid you', paid: 0, share: toCents(s.amount), note: s.method });
+    if (s.payer === memberId) items.push({ date: s.date, kind: 'settlement', id: s.id, text: 'You paid ' + name(s.recipient), paid: toCents(s.amount), share: 0, note: methodText(s.method) });
+    else if (s.recipient === memberId) items.push({ date: s.date, kind: 'settlement', id: s.id, text: name(s.payer) + ' paid you', paid: 0, share: toCents(s.amount), note: methodText(s.method) });
   });
   items.sort((a, b) => a.date.localeCompare(b.date) || a.kind.localeCompare(b.kind));
   let opening = 0, running = 0;
@@ -115,6 +115,7 @@ export function statement(memberId, { users, expenses, splits, topups, allocatio
   return { opening: opening / 100, closing: running / 100, totals: { paid: totals.paid / 100, share: totals.share / 100 }, entries };
 }
 const fmtCents = (c) => '$' + (c / 100).toFixed(2);
+const methodText = (m) => String(m || '').replace(/_/g, ' ');   // 'bank_transfer' → 'bank transfer'
 
 export function topupShares(amount, users, method, allocations) {
   const active = users.filter((u) => u.active);
