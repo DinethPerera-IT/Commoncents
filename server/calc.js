@@ -58,7 +58,7 @@ export function netBalances({ users, expenses, splits, topups, allocations, allo
   });
   topups.forEach((t) => {
     net[t.paid_by] += Number(t.amount);
-    const shares = topupShares(Number(t.amount), users, allocationMethod, allocations);
+    const shares = t.shares || topupShares(Number(t.amount), users, allocationMethod, allocations);
     users.forEach((u) => { net[u.id] -= shares[u.id] || 0; });
   });
   settlements.forEach((s) => {
@@ -90,9 +90,9 @@ export function statement(memberId, { users, expenses, splits, topups, allocatio
   });
   topups.forEach((t) => {
     const paid = t.paid_by === memberId ? toCents(t.amount) : 0;
-    const share = toCents(topupShares(Number(t.amount), users, allocationMethod, allocations)[memberId] || 0);
+    const share = toCents((t.shares || topupShares(Number(t.amount), users, allocationMethod, allocations))[memberId] || 0);
     if (!paid && !share) return;
-    items.push({ date: t.date, kind: 'topup', id: t.id, text: 'Fibre top-up', paid, share,
+    items.push({ date: t.date, kind: 'topup', id: t.id, text: 'Fibre & Electricity top-up', paid, share,
       note: paid ? 'you topped up ' + fmtCents(paid) + (share ? ', your share ' + fmtCents(share) : '') : name(t.paid_by) + ' topped up; your share' });
   });
   settlements.forEach((s) => {
@@ -155,15 +155,14 @@ export function settlementPlan(net) {
 }
 
 export function fibreStats(topups, usage) {
-  const up = topups.reduce((s, t) => s + Number(t.amount), 0);
-  const used = usage.reduce((s, u) => s + Number(u.amount), 0);
-  const bal = round2(up - used);
-  const weeks = usage.length || 1;
-  const perWeek = used / weeks;
-  const weeksLeft = perWeek > 0 ? bal / perWeek : 999;
-  return { total_topped_up: round2(up), total_used: round2(used), balance: bal,
-    avg_weekly_usage: round2(perWeek),
-    est_depletion_date: addDays(currentWeek(), Math.min(3650, Math.round(weeksLeft * 7))) };
+  const up = topups.reduce((s,t) => s + toCents(t.amount), 0);
+  const used = usage.reduce((s,t) => s + toCents(t.amount), 0);
+  const dates = usage.map(u => (u.usage_date instanceof Date ? u.usage_date.toISOString() : String(u.usage_date)).slice(0,10)).sort();
+  const days = dates.length > 1 ? (new Date(dates.at(-1)) - new Date(dates[0])) / 86400000 : 0;
+  const weekly = days >= 14 && dates.length >= 3 ? used / 100 / (days / 7) : null;
+  return { total_topped_up: up / 100, total_used: used / 100, balance: (up-used)/100,
+    avg_weekly_usage: weekly === null ? null : round2(weekly),
+    est_depletion_date: weekly > 0 ? addDays(today(), Math.floor((up-used)/100/weekly*7)) : null };
 }
 
 // Percent splits in whole cents: each person gets their percentage rounded down, then the

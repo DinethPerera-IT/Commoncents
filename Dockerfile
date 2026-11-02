@@ -5,11 +5,13 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY package.json package-lock.json ./
 # npm ci installs exactly what package-lock.json says: the same versions on every build.
-RUN npm ci --omit=dev && npm cache clean --force
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -s /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
+    npm ci --omit=dev && npm cache clean --force
 COPY server ./server
 COPY public ./public
 COPY migrations ./migrations
-RUN mkdir -p /app/data && chown -R app:app /app/data
+RUN mkdir -p /app/data && chown -R app:app /app
 USER app
 EXPOSE 3040
 # Docker marks the container unhealthy if /healthz (app + database) stops answering.

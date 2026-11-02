@@ -1,4 +1,5 @@
 import express from 'express';
+import { registerUtilities, utilitiesLock, checkCredit } from './utilities.js';
 import cookieParser from 'cookie-parser';
 import multer from 'multer';
 import helmet from 'helmet';
@@ -78,7 +79,7 @@ app.use(cookieParser());
 
 // Service worker: its cache name carries a hash of the app shell, so every deploy that
 // changes app.js/css/html gets a new cache and the old one is deleted on activate.
-const SHELL_FILES = ['index.html', 'app.js', 'industry.css', 'sw-register.js', 'manifest.json'];
+const SHELL_FILES = ['index.html', 'app.js', 'industry.css', 'sw-register.js', 'controls.js', 'manifest.json'];
 const BUILD_ID = crypto.createHash('sha256')
   .update(SHELL_FILES.map((f) => fs.readFileSync(path.join(PUBLIC, f))).join('\0'))
   .digest('hex').slice(0, 10);
@@ -488,104 +489,7 @@ app.get('/api/recurring-bills', wrap(async (_req, res) => {
     'SELECT r.*, c.name AS category, u.name AS default_payer_name FROM recurring_bills r JOIN categories c ON c.id=r.category_id LEFT JOIN users u ON u.id=r.default_payer WHERE r.active ORDER BY r.name'));
 }));
 
-// ---- prepaid (fibre) ----
-app.get('/api/prepaid', wrap(async (_req, res) => {
-  const acc = await one('SELECT * FROM prepaid_accounts LIMIT 1');
-  const topups = await all('SELECT t.*, u.name AS paid_by_name FROM prepaid_topups t JOIN users u ON u.id=t.paid_by WHERE prepaid_account_id=$1 ORDER BY topup_date DESC', [acc.id]);
-  const usage = await all('SELECT * FROM prepaid_usage WHERE prepaid_account_id=$1 ORDER BY usage_date DESC', [acc.id]);
-  res.json({ ...acc, ...fibreStats(topups, usage), topups, usage });
-}));
-app.post('/api/prepaid/topups', wrap(async (req, res) => {
-  const amount = round2(Number(req.body?.amount));
-  if (!amount || amount <= 0) return bad(res, 'INVALID_AMOUNT', 'Top-up must be more than $0.', 'amount');
-  const acc = await one('SELECT id FROM prepaid_accounts LIMIT 1');
-  const t = await one('INSERT INTO prepaid_topups (prepaid_account_id, amount, paid_by, topup_date) VALUES ($1,$2,$3,$4) RETURNING *',
-    [acc.id, amount, req.body?.paid_by || req.user.id, req.body?.topup_date || today()]);
-  const activity_id = await logActivity({
-    householdId: req.user.household_id, userId: req.user.id, entityType: 'prepaid_topup', entityId: t.id,
-    action: 'create', summary: 'Recorded fibre top-up of $' + amount.toFixed(2), after: t,
-  });
-  res.json({ ok: true, activity_id });
-}));
-app.patch('/api/prepaid/topups/:id', wrap(async (req, res) => {
-  const existing = await one('SELECT * FROM prepaid_topups WHERE id=$1', [req.params.id]);
-  if (!existing) return res.status(404).json({ error: { code: 'MISSING_FIELD', message: 'No such top-up.' } });
-  const amount = req.body?.amount !== undefined ? round2(Number(req.body.amount)) : Number(existing.amount);
-  if (!amount || amount <= 0) return bad(res, 'INVALID_AMOUNT', 'Top-up must be more than $0.', 'amount');
-  const topup_date = req.body?.topup_date ? toISODate(req.body.topup_date) : toISODate(existing.topup_date);
-  if (!isValidDate(topup_date)) return bad(res, 'INVALID_DATE', 'Enter a valid date.', 'topup_date');
-  await q('UPDATE prepaid_topups SET amount=$1, topup_date=$2 WHERE id=$3', [amount, topup_date, existing.id]);
-  const after = await one('SELECT * FROM prepaid_topups WHERE id=$1', [existing.id]);
-  const activity_id = await logActivity({
-    householdId: req.user.household_id, userId: req.user.id, entityType: 'prepaid_topup', entityId: existing.id,
-    action: 'update', summary: 'Edited fibre top-up to $' + amount.toFixed(2), before: existing, after,
-  });
-  res.json({ ok: true, activity_id });
-}));
-app.delete('/api/prepaid/topups/:id', wrap(async (req, res) => {
-  const existing = await one('SELECT * FROM prepaid_topups WHERE id=$1', [req.params.id]);
-  if (!existing) return res.status(404).json({ error: { code: 'MISSING_FIELD', message: 'No such top-up.' } });
-  await q('DELETE FROM prepaid_topups WHERE id=$1', [req.params.id]);
-  const activity_id = await logActivity({
-    householdId: req.user.household_id, userId: req.user.id, entityType: 'prepaid_topup', entityId: existing.id,
-    action: 'delete', summary: 'Deleted fibre top-up of $' + Number(existing.amount).toFixed(2), before: existing,
-  });
-  res.json({ ok: true, activity_id });
-}));
-app.post('/api/prepaid/usage', wrap(async (req, res) => {
-  const amount = round2(Number(req.body?.amount));
-  if (!amount || amount <= 0) return bad(res, 'INVALID_AMOUNT', 'Usage must be more than $0.', 'amount');
-  const acc = await one('SELECT id FROM prepaid_accounts LIMIT 1');
-  const st = await one('SELECT COALESCE(SUM(amount),0) AS up FROM prepaid_topups WHERE prepaid_account_id=$1', [acc.id]);
-  const us = await one('SELECT COALESCE(SUM(amount),0) AS used FROM prepaid_usage WHERE prepaid_account_id=$1', [acc.id]);
-  if (Number(st.up) - Number(us.used) - amount < -0.01) {
-    return bad(res, 'NEGATIVE_BALANCE', 'That would take the prepaid balance below zero.');
-  }
-  const u = await one('INSERT INTO prepaid_usage (prepaid_account_id, amount, usage_date, note) VALUES ($1,$2,$3,$4) RETURNING *',
-    [acc.id, amount, req.body?.usage_date || today(), req.body?.note || null]);
-  const activity_id = await logActivity({
-    householdId: req.user.household_id, userId: req.user.id, entityType: 'prepaid_usage', entityId: u.id,
-    action: 'create', summary: 'Recorded fibre usage of $' + amount.toFixed(2), after: u,
-  });
-  res.json({ ok: true, activity_id });
-}));
-app.patch('/api/prepaid/usage/:id', wrap(async (req, res) => {
-  const existing = await one('SELECT * FROM prepaid_usage WHERE id=$1', [req.params.id]);
-  if (!existing) return res.status(404).json({ error: { code: 'MISSING_FIELD', message: 'No such usage record.' } });
-  const amount = req.body?.amount !== undefined ? round2(Number(req.body.amount)) : Number(existing.amount);
-  if (!amount || amount <= 0) return bad(res, 'INVALID_AMOUNT', 'Usage must be more than $0.', 'amount');
-  const usage_date = req.body?.usage_date ? toISODate(req.body.usage_date) : toISODate(existing.usage_date);
-  if (!isValidDate(usage_date)) return bad(res, 'INVALID_DATE', 'Enter a valid date.', 'usage_date');
-  const note = req.body?.note !== undefined ? req.body.note : existing.note;
-  await q('UPDATE prepaid_usage SET amount=$1, usage_date=$2, note=$3 WHERE id=$4', [amount, usage_date, note, existing.id]);
-  const after = await one('SELECT * FROM prepaid_usage WHERE id=$1', [existing.id]);
-  const activity_id = await logActivity({
-    householdId: req.user.household_id, userId: req.user.id, entityType: 'prepaid_usage', entityId: existing.id,
-    action: 'update', summary: 'Edited fibre usage to $' + amount.toFixed(2), before: existing, after,
-  });
-  res.json({ ok: true, activity_id });
-}));
-app.delete('/api/prepaid/usage/:id', wrap(async (req, res) => {
-  const existing = await one('SELECT * FROM prepaid_usage WHERE id=$1', [req.params.id]);
-  if (!existing) return res.status(404).json({ error: { code: 'MISSING_FIELD', message: 'No such usage record.' } });
-  await q('DELETE FROM prepaid_usage WHERE id=$1', [req.params.id]);
-  const activity_id = await logActivity({
-    householdId: req.user.household_id, userId: req.user.id, entityType: 'prepaid_usage', entityId: existing.id,
-    action: 'delete', summary: 'Deleted fibre usage of $' + Number(existing.amount).toFixed(2), before: existing,
-  });
-  res.json({ ok: true, activity_id });
-}));
-app.put('/api/prepaid/allocation', wrap(async (req, res) => {
-  const method = ['equal', 'percent', 'custom'].includes(req.body?.method) ? req.body.method : 'equal';
-  const acc = await one('SELECT id FROM prepaid_accounts LIMIT 1');
-  await q('UPDATE prepaid_accounts SET allocation_method=$1 WHERE id=$2', [method, acc.id]);
-  await q('DELETE FROM prepaid_allocations WHERE prepaid_account_id=$1', [acc.id]);
-  for (const a of req.body?.allocations || []) {
-    await q('INSERT INTO prepaid_allocations (prepaid_account_id, user_id, percent, fixed_amount) VALUES ($1,$2,$3,$4)',
-      [acc.id, a.user_id, a.percent || null, a.fixed_amount || null]);
-  }
-  res.json({ ok: true });
-}));
+registerUtilities(app, wrap);
 
 // ---- balances & settlements ----
 async function balanceInputs() {
@@ -663,8 +567,8 @@ app.get('/api/reports/categories', wrap(async (req, res) => {
   if (from && isValidDate(from)) { params.push(from); conds.push('e.expense_date >= $' + params.length); }
   if (to && isValidDate(to)) { params.push(to); conds.push('e.expense_date < $' + params.length); }
   const rows = await all(
-    'SELECT c.name, SUM(e.amount) AS total FROM expenses e JOIN categories c ON c.id=e.category_id' +
-    (conds.length ? ' WHERE ' + conds.join(' AND ') : '') + ' GROUP BY c.name ORDER BY total DESC', params);
+    'SELECT e.category AS name, SUM(e.amount) AS total FROM cash_outflows e ' +
+    (conds.length ? ' WHERE ' + conds.join(' AND ') : '') + ' GROUP BY e.category ORDER BY total DESC', params);
   const rent = await one(
     'SELECT COALESCE(SUM(LEAST(amount_paid, amount_due)),0) AS total FROM rent_records' +
     (conds.length ? ' WHERE ' + conds.join(' AND ').replaceAll('e.expense_date', 'week_start') : ''), params);
@@ -676,7 +580,7 @@ app.get('/api/reports/weekly', wrap(async (req, res) => {
   const out = [];
   for (let i = n - 1; i >= 0; i--) {
     const ws = addDays(cw, -7 * i);
-    const r = await one('SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE expense_date>=$1 AND expense_date<$2', [ws, addDays(ws, 7)]);
+    const r = await one('SELECT COALESCE(SUM(amount),0) AS total FROM cash_outflows WHERE expense_date>=$1 AND expense_date<$2', [ws, addDays(ws, 7)]);
     out.push({ week_start: ws, total: Number(r.total) });
   }
   res.json(out);
@@ -687,7 +591,7 @@ app.get('/api/reports/by-member', wrap(async (req, res) => {
   if (isValidDate(req.query.from)) { params.push(req.query.from); conds.push('e.expense_date >= $' + params.length); }
   if (isValidDate(req.query.to)) { params.push(req.query.to); conds.push('e.expense_date < $' + params.length); }
   res.json(await all(
-    'SELECT u.id, u.name, COALESCE(SUM(e.amount),0) AS total FROM users u LEFT JOIN expenses e ON e.paid_by=u.id' +
+    'SELECT u.id, u.name, COALESCE(SUM(e.amount),0) AS total FROM users u LEFT JOIN cash_outflows e ON e.paid_by=u.id' +
     (conds.length ? ' AND ' + conds.join(' AND ') : '') + ' GROUP BY u.id, u.name ORDER BY u.created_at', params));
 }));
 // Spending per calendar month (excl. rent), the last ?months (default 6, max 24) up to this NZ month.
@@ -699,7 +603,7 @@ app.get('/api/reports/monthly', wrap(async (req, res) => {
     months.unshift(m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`);
   }
   const rows = await all(
-    "SELECT to_char(expense_date, 'YYYY-MM') AS month, SUM(amount) AS total FROM expenses WHERE expense_date >= $1 GROUP BY 1",
+    "SELECT to_char(expense_date, 'YYYY-MM') AS month, SUM(amount) AS total FROM cash_outflows WHERE expense_date >= $1 GROUP BY 1",
     [months[0] + '-01']);
   res.json(months.map((month) => ({ month, total: Number(rows.find((r) => r.month === month)?.total || 0) })));
 }));
@@ -743,6 +647,7 @@ async function recurringFields(b, existing) {
     category_id = cat.id;
   }
   if (!category_id) return { err: ['MISSING_FIELD', 'Pick a category.', 'category'] };
+  if (frequency==='monthly' && await one("SELECT 1 FROM categories c JOIN prepaid_accounts p ON p.household_id=c.household_id WHERE c.id=$1 AND c.name='Electricity' AND p.utilities_adopted",[category_id])) return {err:['MISSING_FIELD','Record Fibre & Electricity top-ups instead of new monthly electricity bills.','category']};
   const expected_amount = b.expected_amount !== undefined ? round2(Number(b.expected_amount)) : Number(existing?.expected_amount ?? 0);
   if (isNaN(expected_amount) || expected_amount < 0) return { err: ['INVALID_AMOUNT', 'Enter an amount of $0 or more.', 'expected_amount'] };
   let due_rule = existing?.due_rule || null;
@@ -812,11 +717,14 @@ app.get('/api/budgets', wrap(async (req, res) => {
   const month = isMonth(req.query.month) ? req.query.month : today().slice(0, 7);
   const rows = await all(
     `SELECT c.id AS category_id, c.name AS category, b.monthly_amount,
-            COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.category_id=c.id
+            COALESCE((SELECT SUM(e.amount) FROM cash_outflows e WHERE e.category_id=c.id
                       AND e.expense_date >= $1 AND e.expense_date < $2), 0) AS spent
      FROM categories c LEFT JOIN category_budgets b ON b.category_id=c.id ORDER BY c.sort, c.name`,
     [month + '-01', nextMonth(month) + '-01']);
-  res.json({ month, budgets: rows.map((r) => ({ ...r, monthly_amount: r.monthly_amount === null ? null : Number(r.monthly_amount), spent: Number(r.spent) })) });
+  const budgets = rows.map(r=>({...r, monthly_amount:r.monthly_amount===null?null:Number(r.monthly_amount),spent:Number(r.spent)}));
+  const utilities = budgets.filter(r=>['Fibre / Broadband','Electricity','Fibre & Electricity'].includes(r.category));
+  const combined = {category:'Fibre & Electricity',monthly_amount:utilities.some(r=>r.monthly_amount!==null)?utilities.reduce((s,r)=>s+(r.monthly_amount||0),0):null,spent:utilities.reduce((s,r)=>s+r.spent,0)};
+  res.json({month,budgets,summary:[...budgets.filter(r=>!utilities.includes(r)),combined]});
 }));
 // Set (amount > 0) or remove (0 / empty) a category's budget. Admin only; logged, so it can be undone.
 app.put('/api/budgets/:categoryId', wrap(async (req, res) => {
@@ -876,6 +784,16 @@ app.get('/api/export/expenses.csv', wrap(async (req, res) => {
     rows.map((e) => [toISODate(e.expense_date), e.description, e.category, money(e.amount), e.payer, e.split_method, e.status,
       e.is_shared ? 'yes' : 'no', e.notes, ...users.map((u) => share(e.id, u.id))]));
 }));
+app.get('/api/export/utilities.csv', wrap(async(req,res)=>{
+  const {where,params,label}=exportRange(req,'t.topup_date');
+  const rows=await all('SELECT t.*,u.name AS payer FROM prepaid_topups t JOIN users u ON u.id=t.paid_by'+where+' ORDER BY t.topup_date',params);
+  sendCsv(res,'utilities',label,['Date','Category','Top-up cash outflow','Paid by','Saved shares'],rows.map(t=>[toISODate(t.topup_date),'Fibre & Electricity',Number(t.amount),t.payer,JSON.stringify(t.shares)]));
+}));
+app.get('/api/export/spending.csv', wrap(async(req,res)=>{
+  const {where,params,label}=exportRange(req,'e.expense_date');
+  const rows=await all('SELECT e.*,u.name AS payer FROM cash_outflows e JOIN users u ON u.id=e.paid_by'+where+' ORDER BY e.expense_date',params);
+  sendCsv(res,'spending',label,['Date','Description','Category','Cash outflow','Paid by'],rows.map(t=>[toISODate(t.expense_date),t.description,t.category,Number(t.amount),t.payer]));
+}));
 app.get('/api/export/settlements.csv', wrap(async (req, res) => {
   const { where, params, label } = exportRange(req, 's.settled_on');
   const rows = await all(
@@ -897,7 +815,7 @@ app.get('/api/activity', wrap(async (req, res) => {
   res.json(await recentActivity(req.user.household_id, Math.min(100, Number(req.query.limit) || 30)));
 }));
 app.post('/api/activity/:id/undo', wrap(async (req, res) => {
-  const result = await undoActivity(req.params.id, req.user);
+  const result = await tx(async () => { const acc = await utilitiesLock(req.user.household_id); const result = await undoActivity(req.params.id, req.user); await checkCredit(acc.id); return result; });
   res.json(result);
 }));
 

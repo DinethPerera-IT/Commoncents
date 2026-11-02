@@ -4,8 +4,8 @@
   "description": "Household finances for the flat",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f2f2f3",
-  "theme_color": "#f2f2f3",
+  "background_color": "#f8f8f2",
+  "theme_color": "#f8f8f2",
   "icons": [
     {
       "src": "/icons/icon-180.png",

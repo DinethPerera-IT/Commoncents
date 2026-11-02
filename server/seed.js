@@ -95,9 +95,9 @@ export async function migrateAndSeed() {
   // Recurring bills
   const rec = [
     ['Rent', 'Rent', 'weekly', 790, 'MON', null, 'per-person rent'],
-    ['Fibre top-up', 'Fibre / Broadband', 'prepaid', 250, 'ON_DEPLETION', uid('Dominic'), 'equal'],
+    ['Fibre & Electricity top-up', 'Fibre / Broadband', 'prepaid', 250, 'ON_DEPLETION', uid('Dominic'), 'equal'],
     ['Mobile plan', 'Mobile Plans', 'monthly', 68, 'DAY:7', uid('Dominic'), 'equal'],
-    ['Electricity', 'Electricity', 'monthly', 145, 'DAY:12', uid('Sihas'), 'equal'],
+
     ['Water', 'Water', 'monthly', 82, 'DAY:18', uid('Dominic'), 'equal'],
   ];
   for (const [name, cat, freq, amt, rule, payer, split] of rec) {
@@ -109,14 +109,13 @@ export async function migrateAndSeed() {
   const t = today();
   await q(`INSERT INTO bills (household_id, category_id, name, amount, due_date, billing_period, status, is_demo)
            VALUES ($1,$2,'Mobile — Skinny shared plan',68.00,$3,'current','pending',true)`, [hid, cats['Mobile Plans'], addDays(t, 3)]);
-  await q(`INSERT INTO bills (household_id, category_id, name, amount, due_date, billing_period, status, is_demo)
-           VALUES ($1,$2,'Electricity — Contact Energy',149.00,$3,'current','pending',true)`, [hid, cats['Electricity'], addDays(t, 8)]);
+
   await q(`INSERT INTO bills (household_id, category_id, name, amount, due_date, billing_period, status, is_demo)
            VALUES ($1,$2,'Water — Watercare',84.00,$3,'current','pending',true)`, [hid, cats['Water'], addDays(t, 14)]);
 
   // Prepaid fibre: $250 top-up 8 weeks ago + weekly usage
-  const pa = await one(`INSERT INTO prepaid_accounts (household_id, name) VALUES ($1,'Fibre / Broadband') RETURNING id`, [hid]);
-  await q(`INSERT INTO prepaid_topups (prepaid_account_id, amount, paid_by, topup_date, is_demo) VALUES ($1,250,$2,$3,true)`, [pa.id, uid('Dominic'), W[0]]);
+  const pa = await one(`INSERT INTO prepaid_accounts (household_id, name) VALUES ($1,'Fibre & Electricity') RETURNING id`, [hid]);
+  await q(`INSERT INTO prepaid_topups (prepaid_account_id, amount, paid_by, topup_date, is_demo, shares) VALUES ($1,250,$2,$3,true,$4)`, [pa.id, uid('Dominic'), W[0],JSON.stringify(Object.fromEntries(users.map(u=>[u.id,62.5]))) ]);
   const usageAmts = [13.2,12.8,14.1,13.5,12.9,13.8,13.1,13.6];
   for (let i = 0; i < 8; i++) {
     await q(`INSERT INTO prepaid_usage (prepaid_account_id, amount, usage_date, note, is_demo) VALUES ($1,$2,$3,'Weekly usage',true)`, [pa.id, usageAmts[i], addDays(W[i], 6)]);
@@ -133,13 +132,14 @@ export async function migrateAndSeed() {
     await q(`INSERT INTO settlements (household_id, payer, recipient, amount, settled_on, method, notes, is_demo)
              VALUES ($1,$2,$3,$4,$5,$6,$7,true)`, [hid, payer, recipient, amount, date, method, notes]);
   }
-  console.log('[seed] done. Default login password: ' + defaultPw);
+  console.log('[seed] done.');
 }
 
 // Housekeeping: ensure rent rows exist for the current week; materialise monthly bills.
 // A monthly recurring bill gets one pending bill per month, due on its DAY:n (max 28; 15 if unset).
 // Returns the new bill's id, or null if that month already has one.
 export async function ensureMonthlyBill(r, month = today().slice(0, 7)) {
+  if (r.utilities_retired) return null;
   const existing = await one(
     `SELECT id FROM bills WHERE recurring_bill_id=$1 AND to_char(due_date,'YYYY-MM')=$2`, [r.id, month]);
   if (existing) return null;

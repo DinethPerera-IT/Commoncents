@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>CommonCents</title>
-<meta name="theme-color" content="#f2f2f3">
+<meta name="theme-color" content="#f8f8f2">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="CommonCents">
@@ -12,40 +12,12 @@
 <link rel="apple-touch-icon" href="/icons/icon-180.png">
 <link rel="icon" href="/icons/icon-180.png">
 <link rel="stylesheet" href="/industry.css">
-<style>
-html, body { height: 100%; }
-body { margin: 0; background: var(--color-bg); }
-a { color: var(--color-accent-700); }
-a:hover { color: var(--color-accent-800); }
-.cc-shell { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
-.cc-main { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 16px 16px 96px; }
-.cc-content { max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
-.cc-nav { position: fixed; bottom: 0; left: 0; right: 0; display: flex; background: var(--color-bg); border-top: 1px solid var(--color-divider); padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); z-index: 40; }
-.cc-nav button { flex: 1; min-height: 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; background: transparent; border: none; cursor: pointer; font-family: var(--font-heading); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
-.cc-nav button.on { color: var(--color-accent-700); }
-.cc-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.cc-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); }
-.cc-avatar { width: 36px; height: 36px; flex: none; display: grid; place-items: center; border: 1px solid var(--color-divider); font-family: var(--font-heading); font-weight: 600; font-size: 13px; background: var(--color-accent-100); color: var(--color-accent-800); }
-.cc-num { font-family: var(--font-heading); font-weight: 600; }
-.cc-pos { color: var(--color-accent-700); }
-.cc-neg { color: var(--color-neutral-800); }
-.dialog { background: var(--color-bg) !important; }
-.cc-toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); z-index: 90; background: var(--color-neutral-900); color: var(--color-bg); padding: 10px 16px; font-size: 13px; max-width: 90vw; }
-.cc-bar { height: 8px; border: 1px solid var(--color-divider); }
-.cc-bar > div { height: 100%; background: var(--color-accent); }
-@media (min-width: 900px) {
-  .cc-shell { flex-direction: row; }
-  .cc-nav { position: static; flex-direction: column; width: 190px; border-top: none; border-right: 1px solid var(--color-divider); padding: 16px 10px; justify-content: flex-start; gap: 4px; }
-  .cc-nav button { flex: none; flex-direction: row; justify-content: flex-start; gap: 10px; font-size: 13px; padding: 0 12px; width: 100%; }
-  .cc-main { padding: 28px 32px 40px; }
-  .cc-content { max-width: 860px; }
-  .cc-cards { grid-template-columns: repeat(4, 1fr); }
-}
-</style>
+
 </head>
 <body>
 <div id="app"></div>
 <script src="/app.js"></script>
+<script src="/controls.js"></script>
 <script src="/sw-register.js"></script>
 </body>
 </html>

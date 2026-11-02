@@ -1,13 +1,10 @@
-/* Industry — design-system tokens and component classes. This file is the source of truth for the system's look; retune it here and see readme.md. */
-@import url('https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;700&family=Barlow+Condensed:wght@400;600&display=swap');
-
 :root {
-  --color-bg: #f2f2f3;
-  --color-surface: #e9e9ea;
-  --color-text: #1d1f20;
-  --color-accent: #5980a6;
-  --color-accent-2: #728fab;
-  --color-divider: color-mix(in srgb, #1d1f20 16%, transparent);
+  --color-bg: #f8f8f2;
+  --color-surface: #eef0e6;
+  --color-text: #182b22;
+  --color-accent: #123e30;
+  --color-accent-2: #789f75;
+  --color-divider: color-mix(in srgb, #182b22 16%, transparent);
 
   /* Tonal ramps — generated in OKLCH on one shared lightness scale, so the
      same step of any role matches the others in visual value. */
@@ -21,18 +18,18 @@
   --color-neutral-800: #424244;
   --color-neutral-900: #2b2b2d;
 
-  --color-accent-100: #eef6ff;
-  --color-accent-200: #d6ebff;
-  --color-accent-300: #b5d9fd;
-  --color-accent-400: #94bce3;
-  --color-accent-500: #749dc4;
-  --color-accent-600: #597ea3;
-  --color-accent-700: #416180;
-  --color-accent-800: #2c455d;
-  --color-accent-900: #1d2d3d;
+  --color-accent-100: #eaf0df;
+  --color-accent-200: #d9e7d1;
+  --color-accent-300: #bdd3b0;
+  --color-accent-400: #a9c9a0;
+  --color-accent-500: #789f75;
+  --color-accent-600: #315f45;
+  --color-accent-700: #214c36;
+  --color-accent-800: #153e30;
+  --color-accent-900: #0c3025;
 
-  --color-accent-2-100: #eef6ff;
-  --color-accent-2-200: #d6ebff;
+  --color-accent-2-100: #eaf0df;
+  --color-accent-2-200: #d9e7d1;
   --color-accent-2-300: #bdd8f2;
   --color-accent-2-400: #9ebbd8;
   --color-accent-2-500: #7e9cb8;
@@ -41,9 +38,9 @@
   --color-accent-2-800: #314457;
   --color-accent-2-900: #1f2d3a;
 
-  --font-heading: "Barlow Condensed", system-ui, sans-serif;
+  --font-heading: "Avenir Next", system-ui, sans-serif;
   --font-heading-weight: 600;
-  --font-body: "Barlow", system-ui, sans-serif;
+  --font-body: "Avenir Next", system-ui, sans-serif;
 
   --space-1: 3.4px;
   --space-2: 6.8px;
@@ -52,9 +49,9 @@
   --space-6: 20.4px;
   --space-8: 27.2px;
 
-  --radius-sm: 2px;
-  --radius-md: 4px;
-  --radius-lg: 7px;
+  --radius-sm: 12px;
+  --radius-md: 18px;
+  --radius-lg: 24px;
 
   /* Elevation — derived from the ground: soft ink-tinted shadows on a
      light theme, a hairline edge + ambient darkness on a dark one. */
@@ -70,30 +67,8 @@ body {
 }
 h1, h2, h3, h4 { font-family: var(--font-heading); font-weight: var(--font-heading-weight); }
 
-.blueprint {
-  position: relative;
-  border: 1px solid var(--color-divider);
-  border-radius: 0;
-}
-/* The overlay image treatments (halftone, duotone) clip their overlay
-   (overflow:hidden); a blueprint wrapper draws its registration marks
-   outside the box, so when both classes share a wrapper the frame must
-   win. */
-.blueprint.halftone, .blueprint.plate, .blueprint.duotone { overflow: visible; }
-.blueprint > .corner {
-  position: absolute; width: 11px; height: 11px;
-  color: color-mix(in srgb, var(--color-text) 55%, transparent);
-}
-.blueprint > .corner::before, .blueprint > .corner::after {
-  content: ""; position: absolute; background: currentColor;
-}
-.blueprint > .corner::before { left: 5px; top: 0; width: 1px; height: 100%; }
-.blueprint > .corner::after  { top: 5px; left: 0; width: 100%; height: 1px; }
-.blueprint > .corner.tl { top: -6px; left: -6px; }
-.blueprint > .corner.tr { top: -6px; right: -6px; }
-.blueprint > .corner.bl { bottom: -6px; left: -6px; }
-.blueprint > .corner.br { bottom: -6px; right: -6px; }
-
+.blueprint {position:relative;border:0;border-radius:24px;}
+.corner {display:none;}
 .duotone{position:relative;overflow:hidden}
 .duotone::after{content:"";position:absolute;inset:0;pointer-events:none;
   background:var(--color-accent);mix-blend-mode:color}
@@ -276,11 +251,47 @@ textarea.input { min-height: 90px; resize: vertical; }
 .dialog-body { font-size: 14px; opacity: 0.85; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
 
-/* — blueprint frame: components are wireframe objects (see .blueprint
-     and .corner above) — square, transparent, hairline-bordered — */
-.card, .btn, .input, .tag, .seg, .dialog { border-radius: 0; }
-.card, .dialog { background: transparent; border: 1px solid var(--color-divider); }
-.btn { border: 1px solid var(--color-divider); }
-.btn-primary { border-color: var(--color-accent); }
-.btn-ghost { border-color: transparent; }
+/* Application shell */
 
+html, body { height: 100%; }
+body { margin: 0; background: var(--color-bg); }
+a { color: var(--color-accent-700); }
+a:hover { color: var(--color-accent-800); }
+.cc-shell { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
+.cc-main { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 16px 16px 96px; }
+.cc-content { max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+.cc-nav { position: fixed; bottom: 0; left: 0; right: 0; display: flex; background: var(--color-bg); border-top: 1px solid var(--color-divider); padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); z-index: 40; }
+.cc-nav button { flex: 1; min-height: 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; background: transparent; border: none; cursor: pointer; font-family: var(--font-heading); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+.cc-nav button.on { color: var(--color-accent-700); }
+.cc-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.cc-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); }
+.cc-avatar { width: 36px; height: 36px; flex: none; display: grid; place-items: center; border: 1px solid var(--color-divider); font-family: var(--font-heading); font-weight: 600; font-size: 13px; background: var(--color-accent-100); color: var(--color-accent-800); }
+.cc-num { font-family: var(--font-heading); font-weight: 600; }
+.cc-pos { color: var(--color-accent-700); }
+.cc-neg { color: var(--color-neutral-800); }
+.dialog { background: var(--color-bg) !important; }
+.cc-toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); z-index: 90; background: var(--color-neutral-900); color: var(--color-bg); padding: 10px 16px; font-size: 13px; max-width: 90vw; }
+.cc-bar { height: 8px; border: 1px solid var(--color-divider); }
+.cc-bar > div { height: 100%; background: var(--color-accent); }
+@media (min-width: 900px) {
+  .cc-shell { flex-direction: row; }
+  .cc-nav { position: static; flex-direction: column; width: 190px; border-top: none; border-right: 1px solid var(--color-divider); padding: 16px 10px; justify-content: flex-start; gap: 4px; }
+  .cc-nav button { flex: none; flex-direction: row; justify-content: flex-start; gap: 10px; font-size: 13px; padding: 0 12px; width: 100%; }
+  .cc-main { padding: 28px 32px 40px; }
+  .cc-content { max-width: 860px; }
+  .cc-cards { grid-template-columns: repeat(4, 1fr); }
+}
+
+/* Balance First: common components for every screen */
+:root {--font-body: "Avenir Next", "Segoe UI", system-ui, sans-serif; --font-heading:var(--font-body);--shadow-md:0 8px 30px #153e300b;--shadow-lg:0 20px 70px #153e3020;}
+button,input,select,textarea{font:inherit;touch-action:manipulation}button{cursor:pointer}.btn{min-height:44px!important;border-radius:15px;font-size:14px;letter-spacing:0;text-transform:none}.btn-icon{min-width:44px!important}.btn-secondary{background:#eef0e6;border-color:transparent}.input{min-height:48px;background:#fffef8;padding:12px 14px;min-width:0}.field>label{font-size:13px;color:#50634f}.card{padding:20px;background:#eef0e6;border-radius:24px;box-shadow:none}.card-kicker{font-size:12px;text-transform:none;letter-spacing:0;font-weight:600;color:#50634f}.card-meta,.text-muted{color:#596a5c}.tag{border-radius:20px;padding:5px 9px}.seg{border:0;border-radius:24px;background:#eef0e6;flex-wrap:wrap;padding:4px}.seg-opt{border:0!important;border-radius:24px;min-height:44px}.cc-row{padding:14px 0;gap:12px}.cc-avatar{border:0;border-radius:50%;background:#d9e7d1}.cc-bar{border:0;border-radius:8px;background:#d5dfcb;overflow:hidden}.cc-bar>div{border-radius:8px;background:#467c53}.cc-content{gap:25px}.cc-main{padding:24px 18px 100px}.cc-nav{border:0;background:#f8f8f2;padding-top:10px;box-shadow:0 -5px 25px #153e3005}.cc-nav button{font-family:var(--font-body);text-transform:none;letter-spacing:0;min-height:50px;font-size:11px;border-radius:15px}.cc-nav button.on{background:#eaf0df;font-weight:650}.cc-nav .record-nav{flex:none;width:50px;height:50px;border-radius:50%;background:#123e30;color:#fffef8;margin:0 7px;align-self:center}.cc-toast{border-radius:18px;box-shadow:var(--shadow-lg);line-height:1.5}.cc-cards{grid-template-columns:1fr 1fr}.balance-hero{background:linear-gradient(115deg,#194a38,#0f3529);color:#f8f8f2;padding:25px;border-radius:25px}.balance-hero .card-kicker,.balance-hero .text-muted,.balance-hero .card-meta{color:#c7d9c1}.balance-hero .amount{font-size:44px;font-weight:650;letter-spacing:-.05em;line-height:1.3;margin:10px 0}.balance-hero p{font-size:12px}.quick-actions{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:2px 0 8px}.quick-actions button{background:none;border:0;font-size:11px;min-height:75px;padding:0;color:#182b22}.quick-actions span{display:grid;place-items:center;background:#eef0e6;width:49px;height:49px;border-radius:18px;margin:0 auto 8px;font-size:24px}.password-control{position:relative}.password-control input{padding-right:54px}.password-control button{position:absolute;right:3px;top:2px;width:44px;height:44px;border:0;background:transparent;color:#365e40;border-radius:12px}.password-control svg{width:21px;height:21px}.login-card{background:none;box-shadow:none}.login-card h2{font-size:35px;letter-spacing:-.04em}.login-card:before{content:"Your flat. Better days.";display:block;background:linear-gradient(120deg,#194a38,#0f3529);color:#f8f8f2;border-radius:24px;padding:30px 24px;font-size:32px;font-weight:650;line-height:1.15;letter-spacing:-.04em;margin-bottom:15px}.dialog{border-radius:25px!important;box-shadow:var(--shadow-lg);max-width:560px;width:calc(100vw - 28px)}.dialog-title{font-size:24px;text-transform:none;letter-spacing:-.03em}.dialog-backdrop{background:#132b2255;backdrop-filter:blur(4px)}.dlg-body{padding:5px}.dialog-actions{gap:10px}.alloc-inputs{display:grid;grid-template-columns:1fr 1fr;gap:12px}.app-brand{font-size:20px;font-weight:650;letter-spacing:-.04em}.offline-note{background:#eaf0df;padding:10px 15px;border-radius:13px;font-size:12px}.cc-nav-brand{display:none}.report-note{font-size:12px;line-height:1.7;color:#596a5c}
+@media(min-width:900px){.cc-nav{width:220px;background:#f0f2e8;padding:28px 14px;box-shadow:none}.cc-nav-brand{display:block;font-size:22px;font-weight:650;padding:5px 12px 30px;letter-spacing:-.05em}.cc-nav button{font-size:14px;min-height:49px;margin-bottom:5px}.cc-nav button.on{background:#123e30;color:#f8f8f2}.cc-nav .record-nav{width:100%;border-radius:15px;margin:8px 0;flex-direction:row}.cc-main{padding:35px 40px}.cc-content{max-width:1120px}.cc-cards{grid-template-columns:repeat(4,1fr)}.balance-hero{padding:30px}.quick-actions{max-width:500px}.login-card{max-width:440px}}
+@media(max-width:380px){.cc-main{padding-inline:12px}.card{padding:16px}.cc-cards{gap:8px}.cc-row{flex-wrap:wrap}.cc-nav button{font-size:10px}.alloc-inputs{grid-template-columns:1fr}.cc-nav .record-nav{width:44px;margin:0 3px}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+.cc-nav button[data-record]{order:0}.cc-nav button[data-tab=dash]{order:-2}.cc-nav button[data-tab=expenses]{order:-1}.cc-nav button[data-tab=bills],.cc-nav button[data-tab=balances],.cc-nav button[data-tab=more]{order:1}
+@media(min-width:900px){.cc-nav button{order:0!important}.cc-nav-brand{order:-3}}
+
+.dashboard-layout{display:flex;flex-direction:column;gap:20px}.dash-primary,.dash-transactions,.dash-household{display:flex;flex-direction:column;gap:20px}.dash-primary .cc-cards{grid-template-columns:1fr 1fr}.cc-nav-brand{flex:none}.record-nav:after{content:"Record";font-size:13px}@media(max-width:899px){.record-nav:after{display:none}}@media(min-width:1200px){.dashboard-layout{display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:24px;align-items:start}.dashboard-layout>div:first-child{grid-column:1/-1}.dashboard-layout .balance-hero .amount{font-size:42px}.dashboard-layout .card{padding:18px}.dashboard-layout .cc-row{flex-wrap:wrap}.dash-primary .quick-actions{gap:4px}.dash-primary .quick-actions button{font-size:10px}}
+
+.cc-nav button[data-tab=fibre]{order:1}@media(max-width:899px){.cc-nav button[data-tab=bills],.cc-nav button[data-tab=balances]{display:none}.cc-nav button[data-tab=more]{order:2}}

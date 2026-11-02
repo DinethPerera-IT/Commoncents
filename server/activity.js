@@ -21,7 +21,7 @@ export async function recentActivity(householdId, limit = 30) {
 const EXPENSE_COLS = ['household_id', 'category_id', 'description', 'amount', 'expense_date', 'billing_period', 'paid_by', 'is_shared', 'split_method', 'status', 'notes', 'receipt_path', 'is_demo'];
 const BILL_COLS = ['household_id', 'recurring_bill_id', 'category_id', 'name', 'amount', 'due_date', 'billing_period', 'status', 'paid_by', 'expense_id', 'is_demo'];
 const SETTLEMENT_COLS = ['household_id', 'payer', 'recipient', 'amount', 'settled_on', 'method', 'notes', 'status', 'is_demo'];
-const TOPUP_COLS = ['prepaid_account_id', 'amount', 'paid_by', 'topup_date', 'is_demo'];
+const TOPUP_COLS = ['prepaid_account_id', 'amount', 'paid_by', 'topup_date', 'is_demo', 'shares'];
 const USAGE_COLS = ['prepaid_account_id', 'amount', 'usage_date', 'note', 'is_demo'];
 const RECURRING_COLS = ['category_id', 'name', 'frequency', 'expected_amount', 'due_rule', 'default_payer', 'active'];
 const RENT_COLS = ['household_id', 'user_id', 'week_start', 'amount_due', 'amount_paid', 'status', 'is_demo'];
@@ -42,6 +42,12 @@ export async function undoActivity(activityId, actingUser) {
   if (a.undone) throw { code: 'DUPLICATE_TRANSACTION', message: 'That action was already undone.' };
   if (a.household_id !== actingUser.household_id) throw { code: 'FORBIDDEN', message: 'Not your household.' };
 
+  if (a.entity_type.startsWith('prepaid_') && a.action !== 'delete') {
+    const table = a.entity_type === 'prepaid_topup' ? 'prepaid_topups' : 'prepaid_usage';
+    const current = await one(`SELECT * FROM ${table} WHERE id=$1`, [a.entity_id]);
+    if (!current || ['amount','paid_by','note','shares'].some(k => a.after_data?.[k] !== undefined && JSON.stringify(current[k]) !== JSON.stringify(a.after_data[k])))
+      throw {code:'DUPLICATE_TRANSACTION',message:'This record changed since that action. Undo the newer change first.'};
+  }
   const before = a.before_data;
   const after = a.after_data;
 

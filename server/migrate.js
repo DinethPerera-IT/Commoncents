@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pool from './db.js';
+import { topupShares } from './calc.js';
 
 const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
 const LOCK_ID = 4040;   // any fixed number: stops two app instances migrating at the same time
@@ -30,6 +31,19 @@ export async function migrate({ dir = DIR, log = console.log } = {}) {
       try {
         await client.query('BEGIN');
         await client.query(fs.readFileSync(path.join(dir, file), 'utf8'));
+        if (file === '004_prepaid_utilities.sql') {
+          for (const acc of (await client.query('SELECT * FROM prepaid_accounts')).rows) {
+            const users = (await client.query('SELECT * FROM users WHERE household_id=$1 ORDER BY created_at', [acc.household_id])).rows;
+            const allocations = (await client.query('SELECT * FROM prepaid_allocations WHERE prepaid_account_id=$1', [acc.id])).rows;
+            const freeze = t => t.prepaid_account_id !== acc.id ? t : ({...t, shares: t.shares || topupShares(Number(t.amount), users, acc.allocation_method, allocations)});
+            for (const t of (await client.query('SELECT * FROM prepaid_topups WHERE prepaid_account_id=$1', [acc.id])).rows)
+              await client.query('UPDATE prepaid_topups SET shares=$1 WHERE id=$2', [JSON.stringify(freeze(t).shares), t.id]);
+            for (const a of (await client.query("SELECT * FROM activity_log WHERE household_id=$1 AND entity_type='prepaid_topup'", [acc.household_id])).rows) {
+              await client.query('UPDATE activity_log SET before_data=$1,after_data=$2 WHERE id=$3',
+                [a.before_data ? JSON.stringify(freeze(a.before_data)) : null, a.after_data ? JSON.stringify(freeze(a.after_data)) : null, a.id]);
+            }
+          }
+        }
         await client.query('INSERT INTO schema_migrations (version) VALUES ($1)', [file]);
         await client.query('COMMIT');
         log(`[migrate] applied ${file}`);

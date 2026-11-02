@@ -282,7 +282,7 @@ test('recurring bills: create (monthly → this month’s bill appears), edit, s
   const { today } = await import('../server/calc.js');
   const month = today().slice(0, 7);
   const created = await api('POST', '/api/recurring-bills', {
-    name: 'Gas', category: 'Electricity', frequency: 'monthly', expected_amount: 55.5, due_day: 20, default_payer: id('Sihas'),
+    name: 'Gas', category: 'Miscellaneous', frequency: 'monthly', expected_amount: 55.5, due_day: 20, default_payer: id('Sihas'),
   });
   assert.equal(created.status, 200, JSON.stringify(created.body));
   assert.equal(created.body.due_rule, 'DAY:20');
@@ -353,4 +353,71 @@ test('statement: a period starts from the opening balance and only lists its own
   const sum = st.entries.reduce((s, e) => s + Math.round(e.amount * 100), 0);
   assert.equal(Math.round(st.closing * 100), Math.round(st.opening * 100) + sum);
   assert.equal((await api('GET', '/api/statement?member=not-a-uuid')).status, 404);
+});
+
+// Combined utilities: production endpoints, disposable database only.
+test('utilities: top-ups count once, usage changes credit only, immutable shares and undo', {skip}, async()=>{
+  assert.equal((await api('POST','/api/recurring-bills',{name:'Electricity',category:'Electricity',frequency:'monthly',expected_amount:50})).status,400);
+  const before=(await api('GET','/api/balances')).body.net;
+  const oldCredit=(await api('GET','/api/prepaid')).body.balance;
+  const month=(await import('../server/calc.js')).today().slice(0,7);
+  const reportBefore=(await api('GET','/api/reports/monthly?months=1')).body[0].total;
+  const topup=await api('POST','/api/prepaid/topups',{amount:100,paid_by:id('Dominic'),topup_date:month+'-03'});
+  assert.equal(topup.status,200,JSON.stringify(topup.body));
+  const after=(await api('GET','/api/balances')).body.net;
+  for(const m of members) assert.equal(Math.round((after[m.id]-before[m.id])*100),m.name==='Dominic'?7500:-2500);
+  const usage=await api('POST','/api/prepaid/usage',{amount:30,usage_date:month+'-03',note:'Meter reading'});
+  assert.equal(usage.status,200);
+  assert.equal((await api('GET','/api/prepaid')).body.balance,oldCredit+70);
+  assert.deepEqual((await api('GET','/api/balances')).body.net,after);
+  assert.equal((await api('GET','/api/reports/monthly?months=1')).body[0].total,reportBefore+100);
+  assert.equal((await api('PUT','/api/prepaid/allocation',{method:'equal'})).status,400);
+  assert.equal((await api('POST','/api/prepaid/topups',{amount:1,paid_by:'not-a-member'})).status,400);
+  assert.equal((await api('POST','/api/prepaid/usage',{amount:100000})).status,400);
+  assert.equal((await api('POST','/api/prepaid/usage',{amount:1,usage_date:'2026-02-30'})).status,400);
+  const percent=await api('POST','/api/prepaid/topups',{amount:0.01,method:'percent',allocations:members.map(m=>({user_id:m.id,percent:25}))});
+  assert.equal(percent.status,200);
+  const snap=await one('SELECT shares FROM prepaid_topups WHERE id=$1',[percent.body.id]);
+  assert.equal(Object.values(snap.shares).reduce((s,n)=>s+Math.round(n*100),0),1);
+  const edited=await api('PATCH','/api/prepaid/topups/'+percent.body.id,{amount:20,method:'custom',allocations:members.map(m=>({user_id:m.id,fixed_amount:5}))});
+  assert.equal(edited.status,200,JSON.stringify(edited.body));
+  assert.equal((await api('POST','/api/activity/'+edited.body.activity_id+'/undo')).status,200);
+  assert.deepEqual((await one('SELECT shares FROM prepaid_topups WHERE id=$1',[percent.body.id])).shares,snap.shares);
+  const deleted=await api('DELETE','/api/prepaid/topups/'+percent.body.id);
+  assert.equal(deleted.status,200);
+  assert.equal((await api('POST','/api/activity/'+deleted.body.activity_id+'/undo')).status,200);
+  assert.deepEqual((await one('SELECT shares FROM prepaid_topups WHERE id=$1',[percent.body.id])).shares,snap.shares);
+  const whole=(await api('GET','/api/prepaid')).body;
+  const spendAll=await api('POST','/api/prepaid/usage',{amount:whole.balance,usage_date:month+'-03'});
+  assert.equal(spendAll.status,200);
+  const removal=await api('DELETE','/api/prepaid/topups/'+topup.body.id);
+  assert.equal(removal.status,400);
+  assert.equal((await one('SELECT amount FROM prepaid_topups WHERE id=$1',[topup.body.id])).amount,'100.00');
+  assert.equal((await api('POST','/api/activity/'+spendAll.body.activity_id+'/undo')).status,200);
+  for(const m of members){const statement=(await api('GET','/api/statement?member='+m.id)).body;const balances=(await api('GET','/api/balances')).body.net;assert.equal(Math.round(statement.closing*100),Math.round(balances[m.id]*100));}
+  assert.equal((await api('GET','/api/export/spending.csv')).status,200);
+});
+
+test('utilities migration: freezes legacy shares, keeps IDs/credit/budget collisions/bills, retires only electricity', {skip}, async()=>{
+  await resetSchema();
+  for(const name of ['001_baseline.sql','002_rent_is_demo_default_false.sql','003_category_budgets.sql']) await db.query(fs.readFileSync(path.join(MIGRATIONS,name),'utf8'));
+  await db.query('CREATE TABLE schema_migrations(version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ DEFAULT now())');
+  for(const name of ['001_baseline.sql','002_rent_is_demo_default_false.sql','003_category_budgets.sql'])await db.query('INSERT INTO schema_migrations(version)VALUES($1)',[name]);
+  const hh=(await one("INSERT INTO households(name) VALUES('Migration test') RETURNING id")).id;
+  const us=[];for(let i=0;i<4;i++) us.push((await one("INSERT INTO users(household_id,name,initials,weekly_rent) VALUES($1,$2,'MT',200) RETURNING id",[hh,'M'+i])).id);
+  const cats=[];for(const n of ['Fibre / Broadband','Electricity','Water'])cats.push((await one('INSERT INTO categories(household_id,name)VALUES($1,$2) RETURNING id',[hh,n])).id);
+  for(const c of cats.slice(0,2))await db.query('INSERT INTO category_budgets(category_id,household_id,monthly_amount)VALUES($1,$2,100)',[c,hh]);
+  const acc=(await one("INSERT INTO prepaid_accounts(household_id,name)VALUES($1,'Fibre / Broadband')RETURNING id",[hh])).id;
+  const t=(await one("INSERT INTO prepaid_topups(prepaid_account_id,amount,paid_by,topup_date)VALUES($1,100,$2,'2026-11-01')RETURNING id",[acc,us[0]])).id;
+  await db.query("INSERT INTO prepaid_usage(prepaid_account_id,amount,usage_date)VALUES($1,30,'2026-11-02')",[acc]);
+  for(const c of cats.slice(1))await db.query("INSERT INTO recurring_bills(household_id,category_id,name,frequency,expected_amount)VALUES($1,$2,'Legacy','monthly',20)",[hh,c]);
+  const bill=(await one("INSERT INTO bills(household_id,category_id,name,amount,due_date)VALUES($1,$2,'Legacy electricity',20,'2026-11-12')RETURNING id",[hh,cats[1]])).id;
+  await migrate({log:quiet});await migrate({log:quiet});
+  assert.equal((await one('SELECT amount FROM prepaid_topups WHERE id=$1',[t])).amount,'100.00');
+  assert.deepEqual((await one('SELECT shares FROM prepaid_topups WHERE id=$1',[t])).shares,Object.fromEntries(us.map(id=>[id,25])));
+  assert.equal((await one('SELECT status FROM bills WHERE id=$1',[bill])).status,'pending');
+  assert.equal((await one('SELECT count(*)::int n FROM category_budgets')).n,2);
+  assert.equal((await one('SELECT active FROM recurring_bills WHERE category_id=$1',[cats[1]])).active,false);
+  assert.equal((await one('SELECT active FROM recurring_bills WHERE category_id=$1',[cats[2]])).active,true);
+  assert.equal((await one('SELECT SUM(amount)::float n FROM prepaid_usage')).n,30);
 });

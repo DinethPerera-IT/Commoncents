@@ -11,13 +11,23 @@ const shortDate = (ds) => { const d = new Date(ds + 'T12:00:00'); return d.getDa
 // done in UTC on both ends, so the browser's time zone can't shift a day. (Mixing local noon
 // with toISOString() made NZ browsers land a day early: weeks started on Sunday or Saturday.)
 const pad2 = (n) => String(n).padStart(2, '0');
-const today = () => { const d = new Date(); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
+const today = () => { return new Intl.DateTimeFormat('en-CA', {timeZone:'Pacific/Auckland',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()); };
 const weekStartOf = (ds) => { const d = new Date(ds + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
 const addDays = (ds, n) => { const d = new Date(ds + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 
 const S = { me: null, members: [], categories: [], tab: 'dash', weekOff: 0, moreView: 'menu', repPeriod: 'month', stPeriod: 'all', stMember: null };
 
-async function api(path, opts = {}) {
+const pendingWrites = new Map();
+function api(path, opts = {}) {
+  if (!opts.method || opts.method === 'GET') return sendApi(path, opts);
+  const body = opts.body instanceof FormData ? [...opts.body].map(([k,v])=>[k,typeof v === 'string' ? v : [v.name,v.size,v.lastModified]]) : opts.body;
+  const key = JSON.stringify([path,opts.method,body]);
+  if (pendingWrites.has(key)) return pendingWrites.get(key);
+  const request = sendApi(path,opts).finally(()=>pendingWrites.delete(key));
+  pendingWrites.set(key,request);
+  return request;
+}
+async function sendApi(path, opts = {}) {
   const o = { credentials: 'same-origin', headers: {}, ...opts };
   if (o.body && !(o.body instanceof FormData)) { o.headers['Content-Type'] = 'application/json'; o.body = JSON.stringify(o.body); }
   const r = await fetch('/api' + path, o);
@@ -59,8 +69,9 @@ function dialog(title, bodyHtml, onSubmit, submitLabel, extraFooterHtml) {
   bd.addEventListener('click', (e) => { if (e.target === bd) close(); });
   $('.dlg-cancel', bd).onclick = close;
   $('.dlg-ok', bd).onclick = async () => {
+    const submit = $('.dlg-ok',bd); if(submit.disabled) return; submit.disabled=true;
     try { if ((await onSubmit(bd)) !== false) { close(); render(); } }
-    catch (e) { toast(e.message || 'Something went wrong.'); }
+    catch (e) { toast(e.message || 'Something went wrong.'); } finally {const btn=$('.dlg-ok',bd);if(btn)btn.disabled=false;}
   };
   document.body.appendChild(bd);
   return bd;
@@ -75,7 +86,8 @@ function confirmDialog(msg, onYes) {
   bd.addEventListener('click', (e) => { if (e.target === bd) bd.remove(); });
   $('.dc-no', bd).onclick = () => bd.remove();
   $('.dc-yes', bd).onclick = async () => {
-    try { await onYes(); bd.remove(); render(); } catch (e) { toast(e.message || 'Something went wrong.'); }
+    if($('.dc-yes',bd).disabled)return;$('.dc-yes',bd).disabled=true;
+    try { await onYes(); bd.remove(); render(); } catch (e) { toast(e.message || 'Something went wrong.'); } finally {const btn=$('.dc-yes',bd);if(btn)btn.disabled=false;}
   };
   document.body.appendChild(bd);
 }
@@ -84,6 +96,7 @@ const input = (cls, attrs) => '<input class="input ' + (cls || '') + '" ' + (att
 const card = (inner, style) => '<div class="card blueprint" style="' + (style || '') + '"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>' + inner + '</div>';
 const iconBtn = (cls, id, svgPath, title) => '<button class="btn btn-icon ' + cls + '" data-id="' + esc(id) + '" title="' + esc(title) + '" style="min-height:32px;min-width:32px;padding:0;">' +
   '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="' + svgPath + '"></path></svg></button>';
+const outline = path => '<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="'+path+'"/></svg>';
 const PENCIL = 'M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z';
 const TRASH = 'M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16z';
 
@@ -99,7 +112,9 @@ async function renderLogin() {
       field('Password', input('', 'type="password" id="pw" autocomplete="current-password"')) +
       '<button class="btn btn-primary btn-block" style="min-height:48px;" id="go">Sign in</button>' +
       '<div class="card-meta">First time? The shared starting password is set by your admin.</div>',
-      'width:min(400px,92vw);padding:24px;gap:12px;') + '</div>';
+      'width:min(440px,92vw);padding:24px;gap:16px;') + '</div>';
+  app.querySelector('.card').classList.add('login-card');
+  let busy = false;
   let who = members[0] ? members[0].name : '';
   $('#who').onclick = (e) => {
     const b = e.target.closest('button'); if (!b) return;
@@ -107,10 +122,11 @@ async function renderLogin() {
     $('#who').querySelectorAll('button').forEach((x) => (x.className = 'btn ' + (x === b ? 'btn-primary' : 'btn-secondary')));
   };
   const go = async () => {
+    if (busy) return; busy = true; $('#go').disabled = true;
     try {
       const r = await api('/auth/login', { method: 'POST', body: { name: who, password: $('#pw').value } });
       S.me = r.user; boot();
-    } catch (e) { toast(e.message); }
+    } catch (e) { toast(e.message); } finally {busy=false;if($('#go')) $('#go').disabled=false;}
   };
   $('#go').onclick = go;
   $('#pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
@@ -118,6 +134,7 @@ async function renderLogin() {
 
 // ---------- shell ----------
 const NAV = [
+  ['fibre', 'Utilities', 'm13 2-9 12h7l-1 8 10-13h-7z'],
   ['dash', 'Home', 'M3 10.5L12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z'],
   ['expenses', 'Expenses', 'M4 3h16v18l-3-2-3 2-2-2-2 2-3-2-3 2zM8 8h8M8 12h8M8 16h5'],
   ['bills', 'Bills', 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M9 13h6M9 17h4'],
@@ -126,11 +143,11 @@ const NAV = [
 ];
 function shell(contentHtml) {
   app.innerHTML = '<div class="cc-shell">' +
-    '<nav class="cc-nav">' + NAV.map(([id, label, icon]) =>
+    '<nav class="cc-nav" aria-label="Main navigation"><div class="cc-nav-brand">CommonCents</div><button class="record-nav" data-record="1" aria-label="Record an expense">＋</button>' + NAV.map(([id, label, icon]) =>
       '<button class="' + (S.tab === id ? 'on' : '') + '" data-tab="' + id + '">' +
       '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="' + icon + '"></path></svg>' +
       '<span>' + label + '</span></button>').join('') + '</nav>' +
-    '<main class="cc-main"><div class="cc-content">' +
+    '<main class="cc-main"><div class="cc-content">' + (!navigator.onLine ? '<div class="offline-note" role="status">You’re offline. Reconnect to load records or save changes.</div>' : '') +
     '<header style="display:flex;align-items:center;gap:12px;">' +
     '<div style="font-family:var(--font-heading);font-weight:600;font-size:22px;">CommonCents</div>' +
     '<div style="margin-left:auto;display:flex;align-items:center;gap:8px;">' +
@@ -140,6 +157,7 @@ function shell(contentHtml) {
     '</div></main></div>';
   app.querySelector('.cc-nav').onclick = (e) => {
     const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.record) { expenseDialog(); return; }
     S.tab = b.dataset.tab; S.moreView = 'menu'; render();
   };
 }
@@ -151,7 +169,7 @@ const monthName = (m) => MONTHS[Number(m.slice(5, 7)) - 1] + ' ' + m.slice(0, 4)
 function budgetBar(b) {
   const pct = (b.spent / b.monthly_amount) * 100;
   const over = b.spent - b.monthly_amount;
-  return '<div><div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;"><span>' + esc(b.category) + '</span>' +
+  return '<div><div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;"><span>' + esc(b.category === 'Fibre / Broadband' ? 'Fibre & Electricity (prepaid)' : b.category === 'Electricity' ? 'Fibre & Electricity (legacy electricity)' : b.category) + '</span>' +
     '<span class="cc-num">' + fmt(b.spent) + ' / ' + fmt(b.monthly_amount) +
     (over > 0.005 ? ' <span class="tag tag-outline" style="font-size:10px;">over by ' + fmt(over) + '</span>' : '') + '</span></div>' +
     '<div class="cc-bar" style="margin-top:2px;"><div style="width:' + Math.min(100, pct).toFixed(0) + '%;' +
@@ -159,7 +177,7 @@ function budgetBar(b) {
 }
 // Dashboard card: only shown once at least one budget is set.
 function budgetCard(data) {
-  const set = data.budgets.filter((b) => b.monthly_amount);
+  const set = (data.summary || data.budgets).filter((b) => b.monthly_amount);
   if (!set.length) return '';
   return card('<div class="card-kicker">Budgets — ' + monthName(data.month) + '</div>' + set.map(budgetBar).join(''), 'gap:8px;');
 }
@@ -168,7 +186,7 @@ async function renderBudgets() {
   const admin = S.me.is_admin;
   view().innerHTML = '<div style="display:flex;flex-direction:column;gap:16px;">' + backBtn +
     '<h4 style="margin:0;">Budgets</h4>' +
-    '<div class="card-meta">A monthly limit per category. Spending counts every expense in that category this month (' +
+    '<div class="card-meta">Cash-outflow budgets: expenses and top-ups counted once; usage excluded. Fibre and electricity limits remain separate below and are summed on the dashboard. Month (' +
     monthName(data.month) + ').' + (admin ? ' Leave a box empty for no budget.' : ' Only the admin can change them.') + '</div>' +
     card(data.budgets.map((b) => '<div class="cc-row" style="padding:8px 0;flex-wrap:wrap;">' +
       '<div style="flex:1;min-width:140px;">' + (b.monthly_amount ? budgetBar(b)
@@ -205,32 +223,23 @@ async function renderDash() {
   const catWk = {};
   sum.expenses.forEach((e) => (catWk[e.category] = (catWk[e.category] || 0) + Number(e.amount)));
   const cards = [
-    ['Rent this week', fmt(sum.rent_paid), 'of ' + fmt(sum.rent_due) + ' due' + (sum.rent_credit ? ' \u00b7 ' + fmt(sum.rent_credit) + ' credit' : '')],
-    ['Outstanding', fmt(outstanding), sum.unpaid_items + ' unpaid item' + (sum.unpaid_items === 1 ? '' : 's')],
-    ['Fibre prepaid', fmt(prepaid.balance), '~empty ' + shortDate(prepaid.est_depletion_date)],
-    ['Groceries', fmt(catWk['Groceries'] || 0), isCur ? 'this week' : 'that week'],
-    ['Electricity', latestBill('Electricity').v, latestBill('Electricity').s],
-    ['Water', latestBill('Water').v, latestBill('Water').s],
-    ['Spending', fmt(sum.spend), sum.expenses.length + ' expenses'],
-    ['Your balance', signed(myNet), myNet >= 0.01 ? 'you are owed' : myNet <= -0.01 ? 'you owe' : 'all square'],
+    ['Rent this week', fmt(sum.rent_paid), 'of ' + fmt(sum.rent_due) + ' due · ' + fmt(sum.rent_outstanding) + ' outstanding'],
+    ['Fibre &amp; Electricity', fmt(prepaid.balance), prepaid.est_depletion_date ? 'Estimated depletion ' + shortDate(prepaid.est_depletion_date) : 'Not enough usage history'],
   ];
   view().innerHTML =
-    '<div style="display:flex;flex-direction:column;gap:16px;">' +
+    '<div class="dashboard-layout">' +
     '<div style="display:flex;align-items:center;gap:10px;">' +
     '<button class="btn btn-icon" id="wPrev">\u2039</button>' +
     '<div style="flex:1;text-align:center;"><div class="cc-num" style="font-size:18px;">' + (isCur ? 'This week' : 'Week of ' + shortDate(ws)) + '</div>' +
     '<div class="text-muted" style="font-size:12px;">' + shortDate(ws) + ' \u2013 ' + shortDate(addDays(ws, 6)) + '</div></div>' +
     '<button class="btn btn-icon" id="wNext" ' + (isCur ? 'disabled' : '') + '>\u203a</button></div>' +
-    card('<div class="card-kicker">Household balance</div>' +
-      '<div class="cc-num" style="font-size:40px;line-height:1;">' + fmt(sum.spend) + '</div>' +
-      '<div class="text-muted" style="font-size:13px;">spent ' + (isCur ? 'this week' : 'that week') + ' \u00b7 ' + fmt(outstanding) + ' outstanding</div>' +
-      '<div style="display:flex;justify-content:center;gap:16px;font-size:13px;margin-top:4px;">' +
-      '<span>You owe <strong>' + fmt(Math.max(0, -myNet)) + '</strong></span>' +
-      '<span>You are owed <strong class="cc-pos">' + fmt(Math.max(0, myNet)) + '</strong></span></div>',
-      'padding:20px;text-align:center;gap:4px;') +
+    '<div class="dash-primary"><section class="balance-hero"><div class="card-kicker">' + (myNet > 0 ? 'You are owed' : myNet < 0 ? 'You owe' : 'All square') + '</div><div class="amount">' + fmt(Math.abs(myNet)) + '</div><p>NZD · shared expenses &amp; utilities</p><div class="card-meta">Your personal position · rent stays separate</div></section>' +
+    '<div class="quick-actions"><button id="quickExpense"><span>' + outline('M12 5v14M5 12h14') + '</span>Add expense</button><button id="quickRent"><span>' + outline('M3 10 12 3l9 7v11h-6v-7H9v7H3Z') + '</span>Record rent</button><button id="quickTopup"><span>' + outline('m13 2-9 12h7l-1 8 10-13h-7Z') + '</span>Record top-up</button><button id="quickSettle"><span>' + outline('M4 7h15m-4-4 4 4-4 4M20 17H5m4-4-4 4 4 4') + '</span>Settle up</button></div>' +
     '<div class="cc-cards">' + cards.map(([l, v, s]) =>
-      card('<div class="card-kicker">' + l + '</div><div class="cc-num" style="font-size:22px;">' + v + '</div><div class="card-meta">' + s + '</div>', 'gap:2px;min-height:84px;')).join('') + '</div>' +
-    budgetCard(budgets) +
+      card('<div class="card-kicker">' + l + '</div><div class="cc-num" style="font-size:22px;">' + v + '</div><div class="card-meta">' + s + '</div>', 'gap:2px;min-height:84px;')).join('') + '</div></div><div class="dash-transactions">' +
+    card('<div class="card-kicker">Recent household transactions</div>' + (sum.expenses.length ? sum.expenses.slice(0,5).map(e=>'<div class="cc-row"><div class="cc-avatar">'+outline('M6 3h12v18l-3-2-3 2-3-2-3 2ZM9 8h6m-6 4h6')+'</div><div style="flex:1"><strong>'+esc(e.description)+'</strong><div class="card-meta">'+esc(e.category)+' · '+shortDate(e.expense_date.slice(0,10))+'</div></div><strong>'+fmt(e.amount)+'</strong></div>').join('') : '<p class="report-note">No expenses recorded this week.</p>')) +
+    card('<div class="card-kicker">Upcoming bills</div>' + (bills.filter(b=>b.status==='pending').slice(0,4).map(b=>'<div class="cc-row"><div style="flex:1">'+esc(b.name)+(b.category==='Electricity'?' <span class="tag">Legacy obligation</span>':'')+'<div class="card-meta">Due '+shortDate(b.due_date.slice(0,10))+'</div></div><strong>'+fmt(b.amount)+'</strong></div>').join('') || '<p class="report-note">No upcoming bills.</p>')) +
+    '</div><div class="dash-household">' + budgetCard(budgets) +
     card('<div class="card-kicker" style="margin-bottom:8px;">Flatmate balances \u2014 week of ' + shortDate(ws) + '</div>' +
       S.members.map((m) => {
         const b = sum.by_member[m.id]; const n = bal.net[m.id] || 0;
@@ -245,7 +254,11 @@ async function renderDash() {
           '<div class="cc-num ' + (n >= 0.01 ? 'cc-pos' : 'cc-neg') + '" style="font-size:13px;margin-top:3px;">' + signed(n) + '</div></div></div>';
       }).join('') +
       '<div class="card-meta" style="margin-top:6px;">Tap a flatmate to record rent \u00b7 net = who-owes-who across all weeks</div>', 'gap:0;') +
-    '</div>';
+    '</div></div>';
+  $('#quickExpense').onclick=()=>expenseDialog();
+  $('#quickRent').onclick=()=>rentDialog(S.me.id,ws,sum);
+  $('#quickTopup').onclick=()=>utilityDialog();
+  $('#quickSettle').onclick=()=>{S.tab='balances';render();};
   $('#wPrev').onclick = () => { S.weekOff--; render(); };
   $('#wNext').onclick = () => { if (S.weekOff < 0) { S.weekOff++; render(); } };
   view().querySelectorAll('[data-rent]').forEach((el) => (el.onclick = () => rentDialog(el.dataset.rent, ws, sum)));
@@ -407,7 +420,7 @@ async function renderBills() {
     bills.map((b) => {
       const due = b.due_date.slice(0, 10);
       const overdue = b.status === 'pending' && due < today();
-      return card('<div style="flex:1;min-width:0;"><div style="font-weight:500;font-size:14px;">' + esc(b.name) + '</div>' +
+      return card('<div style="flex:1;min-width:0;"><div style="font-weight:500;font-size:14px;">' + esc(b.name) + (b.category==='Electricity' ? ' <span class="tag">Legacy obligation</span>' : '') + '</div>' +
         '<div class="text-muted" style="font-size:12px;">' + (b.status === 'paid' ? 'Paid by ' + esc(name(b.paid_by)) : 'Due ' + shortDate(due)) + ' \u00b7 ' + esc(b.billing_period || '') + '</div></div>' +
         '<div class="cc-num" style="font-size:18px;">' + fmt(b.amount) + '</div>' +
         (b.status === 'pending'
@@ -424,7 +437,7 @@ async function renderBills() {
         '<span class="tag tag-neutral" style="font-size:10px;">' + esc(r.frequency) + '</span>' +
         '<div class="cc-num" style="min-width:56px;text-align:right;">' + fmt(r.expected_amount) + '</div>' +
         (S.me.is_admin ? iconBtn('rec-edit', r.id, PENCIL, 'Edit') + iconBtn('rec-del', r.id, TRASH, 'Stop') : '') + '</div>').join('') +
-      '<div class="card-meta" style="margin-top:6px;">Monthly bills appear in the list automatically each month. Weekly (rent) and prepaid (fibre) have their own screens.</div>', 'gap:0;') + '</div>';
+      '<div class="card-meta" style="margin-top:6px;">Monthly bills appear in the list automatically each month. Weekly (rent) and prepaid utilities have their own screens.</div>', 'gap:0;') + '</div>';
   const ra = $('#recAdd'); if (ra) ra.onclick = () => recurringDialog(null);
   view().querySelectorAll('.rec-edit').forEach((el) => (el.onclick = () => recurringDialog(recs.find((x) => x.id === el.dataset.id))));
   view().querySelectorAll('.rec-del').forEach((el) => (el.onclick = () => {
@@ -564,6 +577,8 @@ async function renderBalances() {
 async function renderMore() {
   if (S.moreView === 'members') return renderMembers();
   if (S.moreView === 'fibre') return renderFibre();
+  if (S.moreView === 'bills') return renderBills();
+  if (S.moreView === 'balances') return renderBalances();
   if (S.moreView === 'reports') return renderReports();
   if (S.moreView === 'activity') return renderActivity();
   if (S.moreView === 'export') return renderExport();
@@ -571,9 +586,11 @@ async function renderMore() {
   if (S.moreView === 'statement') return renderStatement();
   const prepaid = await api('/prepaid');
   const items = [
+    ['bills', 'Bills & recurring', 'Upcoming and legacy obligations'],
+    ['balances', 'Balances & settlements', 'Who owes who and recorded repayments'],
     ['statement', 'My statement', 'Everything you paid, owe and are owed'],
     ['members', 'Household members', 'Names, weekly rent, active status'],
-    ['fibre', 'Fibre prepaid', fmt(prepaid.balance) + ' remaining'],
+    ['fibre', 'Fibre &amp; Electricity', fmt(prepaid.balance) + ' remaining'],
     ['reports', 'Reports', 'Category, weekly & monthly spending'],
     ['budgets', 'Budgets', 'Monthly limits per category'],
     ['activity', 'Activity & undo', 'Recent changes, with undo'],
@@ -597,14 +614,14 @@ async function renderMore() {
       toast('Password changed.');
     });
   const rb = $('#resetBtn');
-  if (rb) rb.onclick = () => confirmDialog('Remove all demo data (dummy expenses, bills, settlements, fibre history and past rent weeks)? Anything real you\u2019ve entered stays.', async () => {
+  if (rb) rb.onclick = () => confirmDialog('Remove all demo data (dummy expenses, bills, settlements, utilities history and past rent weeks)? Anything real you\u2019ve entered stays.', async () => {
     const r = await api('/admin/reset-demo', { method: 'POST' });
     toast(r.message);
   });
   $('#outBtn').onclick = async () => { await api('/auth/logout', { method: 'POST' }); S.me = null; renderLogin(); };
 }
 const backBtn = '<button class="btn btn-ghost" id="backM" style="align-self:flex-start;min-height:40px;">\u2190 More</button>';
-function wireBack() { $('#backM').onclick = () => { S.moreView = 'menu'; render(); }; }
+function wireBack() { $('#backM').onclick = () => { S.moreView = 'menu'; if(S.tab==='fibre') S.tab='more'; render(); }; }
 async function renderMembers() {
   const members = await api('/members');
   view().innerHTML = '<div style="display:flex;flex-direction:column;gap:16px;">' + backBtn +
@@ -625,24 +642,43 @@ async function renderMembers() {
   view().querySelectorAll('.m-name').forEach((el) => (el.onchange = () => save(el, { name: el.value })));
   view().querySelectorAll('.m-rent').forEach((el) => (el.onchange = () => save(el, { weekly_rent: Number(el.value) })));
 }
+function utilityDialog(kind = 'topup', existing = null) {
+  const opt = (v,label,cur) => '<option value="'+esc(v)+'"'+(v===cur?' selected':'')+'>'+esc(label)+'</option>';
+  const topup = kind === 'topup';
+  const members = S.members.filter(m => m.active);
+  const dlg = dialog((existing ? 'Edit ' : 'Record ') + (topup ? 'top-up' : 'usage'),
+    '<p class="report-note">Fibre &amp; Electricity · Shared prepaid utilities</p>' +
+    field('Amount (NZD)', input('', 'type="number" min="0.01" step="0.01" inputmode="decimal" id="utilAmount" value="' + (existing ? Number(existing.amount) : '') + '"')) +
+    (topup ? field('Paid by', '<select class="input" id="utilPayer">' + members.map(m => opt(m.id,m.name,existing ? existing.paid_by : S.me.id)).join('') + '</select>') : '') +
+    field('Date',input('', 'type="date" id="utilDate" value="' + (existing ? existing[topup ? 'topup_date' : 'usage_date'].slice(0,10) : today()) + '"')) +
+    (topup ? field('Cost allocation', '<select class="input" id="utilMethod"><option value="equal">Equal shares</option><option value="percent">Percentage</option><option value="custom">Custom amounts</option></select>') + '<div class="alloc-inputs" id="utilShares"></div>' : field('Note (optional)',input('', 'id="utilNote" value="' + esc(existing?.note || '') + '"'))) +
+    '<p class="report-note">' + (topup ? 'Records a payment already made; does not buy credit. Shares are saved with this top-up.' : 'Usage reduces prepaid credit. It does not charge members again.') + '</p>',
+    async box => {
+      const body = {amount:Number($('#utilAmount',box).value)};
+      body[topup ? 'topup_date' : 'usage_date'] = $('#utilDate',box).value;
+      if(topup){body.paid_by=$('#utilPayer',box).value;body.method=$('#utilMethod',box).value;body.allocations=members.map(m=>({user_id:m.id,[body.method==='percent'?'percent':'fixed_amount']:Number(box.querySelector('[data-share="'+m.id+'"]').value)}));}
+      else body.note=$('#utilNote',box).value;
+      const r=await api('/prepaid/'+(topup?'topups':'usage')+(existing?'/'+existing.id:''),{method:existing?'PATCH':'POST',body});
+      toastUndo('Utilities record saved.',r.activity_id);
+    },existing?'Save changes':'Record '+(topup?'top-up':'usage'));
+  if(topup){
+    const draw=()=>{const method=$('#utilMethod',dlg).value;$('#utilShares',dlg).innerHTML=members.map(m=>field(m.name+(method==='percent'?' (%)':' (NZD)'),input('', 'type="number" min="0" step="0.01" data-share="'+m.id+'" value="'+(method==='percent'?100/members.length:existing?.shares?.[m.id]||0)+'"'))).join('');$('#utilShares',dlg).hidden=method==='equal';};
+    if(existing?.shares) $('#utilMethod',dlg).value='custom';
+    $('#utilMethod',dlg).onchange=draw;draw();
+  }
+}
 async function renderFibre() {
   const p = await api('/prepaid');
   const pct = Math.max(2, Math.min(100, (p.balance / Math.max(p.total_topped_up, 1)) * 100)).toFixed(0);
   view().innerHTML = '<div style="display:flex;flex-direction:column;gap:16px;">' + backBtn +
-    '<h4 style="margin:0;">Fibre prepaid</h4>' +
+    '<h4 style="margin:0;">Fibre &amp; Electricity</h4>' +
     card('<div class="card-kicker">Remaining balance</div>' +
       '<div class="cc-num" style="font-size:38px;line-height:1;">' + fmt(p.balance) + '</div>' +
-      '<div class="text-muted" style="font-size:12px;">~' + fmt(p.avg_weekly_usage) + '/week \u00b7 runs out around ' + shortDate(p.est_depletion_date) + '</div>' +
+      '<div class="text-muted" style="font-size:12px;">' + (p.est_depletion_date ? 'Estimated depletion ' + shortDate(p.est_depletion_date) : 'Not enough usage history') + '</div>' +
       '<div class="cc-bar" style="margin-top:8px;"><div style="width:' + pct + '%;"></div></div>' +
       '<div style="display:flex;justify-content:space-between;font-size:11px;" class="text-muted"><span>Topped up ' + fmt(p.total_topped_up) + '</span><span>Used ' + fmt(p.total_used) + '</span></div>',
-      'text-align:center;padding:18px;gap:4px;') +
-    '<div style="display:flex;gap:8px;">' + input('', 'type="number" placeholder="Top-up amount" id="tAmt" style="flex:1;"') +
-    '<button class="btn btn-primary" id="tGo" style="min-height:44px;">Record top-up</button></div>' +
-    '<div style="display:flex;gap:8px;">' + input('', 'type="number" placeholder="Usage amount" id="uAmt" style="flex:1;"') +
-    '<button class="btn btn-secondary" id="uGo" style="min-height:44px;">Record usage</button></div>' +
-    field('Cost allocation', '<div class="seg" id="alloc">' +
-      [['equal', 'Equal'], ['percent', 'Custom %'], ['custom', 'Fixed $']].map(([v, l]) =>
-        '<label class="seg-opt" style="min-height:40px;"><input type="radio" name="al" value="' + v + '"' + (p.allocation_method === v ? ' checked' : '') + '>' + l + '</label>').join('') + '</div>') +
+      'text-align:left;padding:24px;gap:8px;') +
+    '<p class="report-note">Shared prepaid utilities. Top-ups share the cost; usage reduces credit without charging members again. Reports count top-ups once, excluding usage.</p><div style="display:flex;gap:10px"><button class="btn btn-primary" id="tGo">Record top-up</button><button class="btn btn-secondary" id="uGo">Record usage</button></div>' +
     card('<div class="card-kicker" style="margin-bottom:4px;">Top-ups &amp; usage</div>' +
       [].concat(
         p.topups.map((t) => ({ type: 'topup', id: t.id, d: t.topup_date.slice(0, 10), h: 'Top-up by ' + esc(t.paid_by_name), a: '+' + fmt(t.amount), c: 'cc-pos', raw: t })),
@@ -652,29 +688,13 @@ async function renderFibre() {
           ' <span class="text-muted">\u00b7 ' + shortDate(r.d) + '</span></div><div class="cc-num ' + r.c + '">' + r.a + '</div>' +
           iconBtn('pp-edit', r.type + ':' + r.id, PENCIL, 'Edit') + iconBtn('pp-del', r.type + ':' + r.id, TRASH, 'Delete') + '</div>').join(''), 'gap:0;') + '</div>';
   wireBack();
-  $('#tGo').onclick = async () => {
-    try { const r = await api('/prepaid/topups', { method: 'POST', body: { amount: Number($('#tAmt').value) } }); toastUndo('Top-up recorded.', r.activity_id); render(); }
-    catch (e) { toast(e.message); }
-  };
-  $('#uGo').onclick = async () => {
-    try { const r = await api('/prepaid/usage', { method: 'POST', body: { amount: Number($('#uAmt').value) } }); toastUndo('Usage recorded.', r.activity_id); render(); }
-    catch (e) { toast(e.message); }
-  };
-  view().querySelectorAll('input[name=al]').forEach((r) => (r.onchange = async () => {
-    try { await api('/prepaid/allocation', { method: 'PUT', body: { method: r.value } }); toast('Allocation updated.'); }
-    catch (e) { toast(e.message); }
-  }));
+  $('#tGo').onclick = () => utilityDialog();
+  $('#uGo').onclick = () => utilityDialog('usage');
   view().querySelectorAll('.pp-edit').forEach((el) => (el.onclick = () => {
     const [type, id] = el.dataset.id.split(':');
     const row = (type === 'topup' ? p.topups : p.usage).find((x) => x.id === id);
     if (type === 'topup') {
-      dialog('Edit top-up',
-        field('Amount (NZD)', input('', 'type="number" inputmode="decimal" id="ptAmt" value="' + Number(row.amount) + '"')) +
-        field('Date', input('', 'type="date" id="ptDate" value="' + row.topup_date.slice(0, 10) + '"')),
-        async (dlg) => {
-          const r = await api('/prepaid/topups/' + id, { method: 'PATCH', body: { amount: Number($('#ptAmt', dlg).value), topup_date: $('#ptDate', dlg).value } });
-          toastUndo('Top-up updated.', r.activity_id);
-        });
+      utilityDialog('topup',row);
     } else {
       dialog('Edit usage',
         field('Amount (NZD)', input('', 'type="number" inputmode="decimal" id="puAmt" value="' + Number(row.amount) + '"')) +
@@ -735,7 +755,7 @@ async function renderReports() {
   };
   const total = catRows.filter((c) => !c.label.startsWith('Rent (')).reduce((s2, c) => s2 + c.v, 0);
   view().innerHTML = '<div style="display:flex;flex-direction:column;gap:16px;">' + backBtn +
-    '<h4 style="margin:0;">Reports</h4>' +
+    '<h4 style="margin:0;">Reports</h4><p class="report-note">Cash outflow: expenses and utilities top-ups counted once. Usage is excluded. Rent is shown separately.</p>' +
     '<div style="display:flex;gap:6px;flex-wrap:wrap;" role="group" aria-label="Report period">' +
     Object.entries(periods).map(([k, [label]]) => '<button class="btn ' + (k === key ? 'btn-primary' : 'btn-secondary') + ' rep-p" data-k="' + k +
       '" aria-pressed="' + (k === key) + '" style="min-height:44px;font-size:12px;">' + label + '</button>').join('') + '</div>' +
@@ -790,7 +810,7 @@ async function renderStatement() {
   view().querySelectorAll('.st-p').forEach((el) => (el.onclick = () => { S.stPeriod = el.dataset.k; render(); }));
 }
 async function renderExport() {
-  const files = [['expenses', 'Expenses', 'every expense, with each person’s share'],
+  const files = [['spending','Household spending','expenses plus utilities top-ups once; excludes rent and usage'], ['utilities','Fibre & Electricity','top-up cash outflows with saved allocations'], ['expenses', 'Expenses', 'every expense, with each person’s share'],
     ['settlements', 'Settlements', 'who paid who back'], ['rent', 'Rent', 'due and paid, per person per week']];
   view().innerHTML = '<div style="display:flex;flex-direction:column;gap:16px;">' + backBtn +
     '<h4 style="margin:0;">Export to spreadsheet</h4>' +
@@ -836,8 +856,9 @@ function confirmUndo(activityId) {
   bd.addEventListener('click', (e) => { if (e.target === bd) bd.remove(); });
   $('.u-no', bd).onclick = () => bd.remove();
   $('.u-yes', bd).onclick = async () => {
+    if($('.u-yes',bd).disabled)return;$('.u-yes',bd).disabled=true;
     try { await api('/activity/' + activityId + '/undo', { method: 'POST' }); bd.remove(); toast('Undone.'); render(); }
-    catch (e) { toast(e.message || 'Could not undo that.'); }
+    catch (e) { toast(e.message || 'Could not undo that.'); $('.u-yes',bd).disabled=false; }
   };
   document.body.appendChild(bd);
 }
@@ -848,6 +869,7 @@ async function render() {
   shell(spinner);
   try {
     if (S.tab === 'dash') await renderDash();
+    else if (S.tab === 'fibre') await renderFibre();
     else if (S.tab === 'expenses') await renderExpenses();
     else if (S.tab === 'bills') await renderBills();
     else if (S.tab === 'balances') await renderBalances();
