@@ -417,11 +417,23 @@ async function renderBills() {
         iconBtn('bill-edit', b.id, PENCIL, 'Edit') + iconBtn('bill-del', b.id, TRASH, 'Delete'),
         'flex-direction:row;align-items:center;gap:12px;');
     }).join('') +
-    card('<div class="card-kicker" style="margin-bottom:6px;">Recurring</div>' +
+    card('<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;"><div class="card-kicker">Recurring</div>' +
+      (S.me.is_admin ? '<button class="btn btn-secondary" id="recAdd" style="min-height:40px;font-size:12px;">+ Add</button>' : '') + '</div>' +
       recs.map((r) => '<div class="cc-row" style="padding:9px 0;font-size:13px;">' +
-        '<div style="flex:1;">' + esc(r.name) + ' <span class="text-muted">\u00b7 ' + esc(r.due_rule || '') + (r.default_payer_name ? ' \u00b7 usually ' + esc(r.default_payer_name) : '') + '</span></div>' +
+        '<div style="flex:1;min-width:0;">' + esc(r.name) + ' <span class="text-muted">\u00b7 ' + esc(dueText(r)) + (r.default_payer_name ? ' \u00b7 usually ' + esc(r.default_payer_name) : '') + '</span></div>' +
         '<span class="tag tag-neutral" style="font-size:10px;">' + esc(r.frequency) + '</span>' +
-        '<div class="cc-num" style="min-width:56px;text-align:right;">' + fmt(r.expected_amount) + '</div></div>').join(''), 'gap:0;') + '</div>';
+        '<div class="cc-num" style="min-width:56px;text-align:right;">' + fmt(r.expected_amount) + '</div>' +
+        (S.me.is_admin ? iconBtn('rec-edit', r.id, PENCIL, 'Edit') + iconBtn('rec-del', r.id, TRASH, 'Stop') : '') + '</div>').join('') +
+      '<div class="card-meta" style="margin-top:6px;">Monthly bills appear in the list automatically each month. Weekly (rent) and prepaid (fibre) have their own screens.</div>', 'gap:0;') + '</div>';
+  const ra = $('#recAdd'); if (ra) ra.onclick = () => recurringDialog(null);
+  view().querySelectorAll('.rec-edit').forEach((el) => (el.onclick = () => recurringDialog(recs.find((x) => x.id === el.dataset.id))));
+  view().querySelectorAll('.rec-del').forEach((el) => (el.onclick = () => {
+    const r = recs.find((x) => x.id === el.dataset.id);
+    confirmDialog('Stop "' + r.name + '"? No new bills will be created. Bills already in the list stay.', async () => {
+      const res = await api('/recurring-bills/' + r.id, { method: 'DELETE' });
+      toastUndo('Recurring bill stopped.', res.activity_id);
+    });
+  }));
   view().querySelectorAll('.bill-pay').forEach((el) => (el.onclick = async () => {
     try { const r = await api('/bills/' + el.dataset.id + '/pay', { method: 'POST', body: {} }); toastUndo('Bill marked paid \u2014 shared expense created.', r.activity_id); render(); }
     catch (e) { toast(e.message); }
@@ -441,6 +453,30 @@ async function renderBills() {
       toastUndo('Bill deleted.', r.activity_id);
     });
   }));
+}
+const dueText = (r) => r.frequency === 'monthly' ? 'due day ' + (String(r.due_rule || '').startsWith('DAY:') ? r.due_rule.slice(4) : '15')
+  : r.frequency === 'weekly' ? 'every Monday' : 'when it runs out';
+function recurringDialog(r) {
+  const day = r && String(r.due_rule || '').startsWith('DAY:') ? r.due_rule.slice(4) : '15';
+  const opt = (v, label, cur) => '<option value="' + esc(v) + '"' + (v === cur ? ' selected' : '') + '>' + esc(label) + '</option>';
+  const bd = dialog(r ? 'Edit recurring bill' : 'New recurring bill',
+    field('Name', input('', 'id="rName" value="' + esc(r ? r.name : '') + '" placeholder="e.g. Power"')) +
+    field('Category', '<select class="input" id="rCat">' + S.categories.map((c) => opt(c.name, c.name, r ? r.category : 'Electricity')).join('') + '</select>') +
+    field('How often', '<select class="input" id="rFreq">' + opt('monthly', 'Monthly (creates a bill each month)', r ? r.frequency : 'monthly') +
+      opt('weekly', 'Weekly (reminder only)', r && r.frequency) + opt('prepaid', 'Prepaid (reminder only)', r && r.frequency) + '</select>') +
+    field('Expected amount (NZD)', input('', 'type="number" inputmode="decimal" min="0" id="rAmt" value="' + (r ? Number(r.expected_amount) : '') + '"')) +
+    '<div id="rDayWrap">' + field('Due day of the month (1–28)', input('', 'type="number" min="1" max="28" id="rDay" value="' + day + '"')) + '</div>' +
+    field('Usually paid by (optional)', '<select class="input" id="rPayer">' + opt('', '—', r ? r.default_payer || '' : '') +
+      S.members.map((m) => opt(m.id, m.name, r ? r.default_payer : '')).join('') + '</select>') +
+    (r ? '<div class="card-meta">Changes apply to bills created from now on; bills already in the list keep their amount.</div>' : ''),
+    async (dlg) => {
+      const body = { name: $('#rName', dlg).value, category: $('#rCat', dlg).value, frequency: $('#rFreq', dlg).value,
+        expected_amount: Number($('#rAmt', dlg).value || 0), due_day: Number($('#rDay', dlg).value), default_payer: $('#rPayer', dlg).value || null };
+      const res = await api('/recurring-bills' + (r ? '/' + r.id : ''), { method: r ? 'PATCH' : 'POST', body });
+      toastUndo(r ? 'Recurring bill updated.' : res.generated_bill_id ? 'Added — this month’s bill is in the list.' : 'Recurring bill added.', res.activity_id);
+    }, r ? 'Save' : 'Add');
+  const sync = () => { $('#rDayWrap', bd).style.display = $('#rFreq', bd).value === 'monthly' ? '' : 'none'; };
+  $('#rFreq', bd).onchange = sync; sync();
 }
 function billDialog(b) {
   dialog('Edit bill',

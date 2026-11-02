@@ -2,6 +2,16 @@
 
 ## Phase 3: features (one branch each, stacked; Discord reminders skipped by choice)
 
+### Recurring bills admin (`feature/recurring-bills`)
+- What `materialise()` already did: only **monthly** recurring bills generate bills (one pending bill per month,
+  due on `DAY:n`, 15 if unset, max 28). Weekly (rent) is tracked as rent records and prepaid (fibre) in the
+  prepaid account, so those entries are reminders. The screen now says so.
+- Bills → Recurring: the admin can **add, edit and stop** recurring bills (`POST/PATCH/DELETE
+  /api/recurring-bills`). A new monthly one creates this month's bill immediately (`ensureMonthlyBill`, pulled
+  out of `materialise()`). Edits apply to future bills only. "Stop" deactivates; past bills and payments stay.
+- All three are logged and undoable (new `recurring_bill` case). Undoing a create removes the bill it generated
+  only if nobody has paid it yet; otherwise the paid bill stays and the recurring bill is just stopped.
+
 ### Reports (`feature/reports`)
 - The charts already existed (the plan assumed only the API did). Added a **period picker** (this month, last
   month, last 3 months, this year, all time) for the category and per-person charts, a total, and a

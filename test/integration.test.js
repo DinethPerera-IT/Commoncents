@@ -276,3 +276,60 @@ test('reports: by-member honours the period (from inclusive, to exclusive)', { s
   for (const row of want.rows) assert.equal(Number(r.body.find((m) => m.name === row.name).total), row.t, row.name);
   assert.ok(Number(r.body.find((m) => m.name === 'Sihas').total) >= 9.99);   // the CSV test's expense
 });
+
+// ---- feature: recurring bills admin ------------------------------------------------------
+test('recurring bills: create (monthly → this month’s bill appears), edit, stop, undo each', { skip }, async () => {
+  const { today } = await import('../server/calc.js');
+  const month = today().slice(0, 7);
+  const created = await api('POST', '/api/recurring-bills', {
+    name: 'Gas', category: 'Electricity', frequency: 'monthly', expected_amount: 55.5, due_day: 20, default_payer: id('Sihas'),
+  });
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  assert.equal(created.body.due_rule, 'DAY:20');
+  const bill = await one('SELECT name, amount::text, due_date::text, status FROM bills WHERE id=$1', [created.body.generated_bill_id]);
+  assert.deepEqual(bill, { name: 'Gas', amount: '55.50', due_date: month + '-20', status: 'pending' });
+  assert.ok((await api('GET', '/api/recurring-bills')).body.some((r) => r.id === created.body.id));
+
+  const edited = await api('PATCH', '/api/recurring-bills/' + created.body.id, { expected_amount: 60, due_day: 5 });
+  assert.equal(edited.status, 200);
+  assert.deepEqual([edited.body.expected_amount, edited.body.due_rule, edited.body.name], ['60.00', 'DAY:5', 'Gas']);
+  assert.equal((await one('SELECT amount::text AS a FROM bills WHERE id=$1', [created.body.generated_bill_id])).a, '55.50');   // existing bill untouched
+
+  const stopped = await api('DELETE', '/api/recurring-bills/' + created.body.id);
+  assert.equal(stopped.status, 200);
+  assert.ok(!(await api('GET', '/api/recurring-bills')).body.some((r) => r.id === created.body.id));
+
+  assert.equal((await api('POST', `/api/activity/${stopped.body.activity_id}/undo`)).status, 200);
+  assert.ok((await api('GET', '/api/recurring-bills')).body.some((r) => r.id === created.body.id));
+  assert.equal((await api('POST', `/api/activity/${edited.body.activity_id}/undo`)).status, 200);
+  assert.equal((await one('SELECT expected_amount::text AS a, due_rule FROM recurring_bills WHERE id=$1', [created.body.id])).a, '55.50');
+  assert.equal((await api('POST', `/api/activity/${created.body.activity_id}/undo`)).status, 200);
+  assert.equal((await one('SELECT count(*)::int AS n FROM recurring_bills WHERE id=$1', [created.body.id])).n, 0);
+  assert.equal((await one('SELECT count(*)::int AS n FROM bills WHERE id=$1', [created.body.generated_bill_id])).n, 0);
+});
+
+test('recurring bills: undoing a create keeps a bill someone already paid', { skip }, async () => {
+  const created = await api('POST', '/api/recurring-bills', { name: 'Bins', category: 'Miscellaneous', frequency: 'monthly', expected_amount: 12 });
+  assert.equal((await api('POST', `/api/bills/${created.body.generated_bill_id}/pay`, {})).status, 200);
+  assert.equal((await api('POST', `/api/activity/${created.body.activity_id}/undo`)).status, 200);
+  assert.equal((await one('SELECT status FROM bills WHERE id=$1', [created.body.generated_bill_id])).status, 'paid');
+  assert.equal((await one('SELECT active FROM recurring_bills WHERE id=$1', [created.body.id])).active, false);
+});
+
+test('recurring bills: validation and admin only', { skip }, async () => {
+  const bad = (body) => api('POST', '/api/recurring-bills', { name: 'X', category: 'Water', frequency: 'monthly', expected_amount: 1, ...body });
+  assert.equal((await bad({ due_day: 31 })).status, 400);
+  assert.equal((await bad({ frequency: 'yearly' })).status, 400);
+  assert.equal((await bad({ category: 'Nope' })).status, 400);
+  assert.equal((await bad({ name: '  ' })).status, 400);
+  assert.equal((await bad({ expected_amount: -1 })).status, 400);
+  const weekly = await bad({ frequency: 'weekly', name: 'Cleaner' });
+  assert.equal(weekly.status, 200);
+  assert.equal(weekly.body.generated_bill_id, null);   // weekly entries are reminders only
+  const saved = cookie;
+  const login = await api('POST', '/api/auth/login', { name: 'Yesith', password: PASSWORD });
+  cookie = login.res.headers.get('set-cookie').split(';')[0];
+  assert.equal((await bad({})).status, 403);
+  assert.equal((await api('DELETE', '/api/recurring-bills/' + weekly.body.id)).status, 403);
+  cookie = saved;
+});

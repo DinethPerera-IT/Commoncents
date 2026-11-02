@@ -137,6 +137,20 @@ export async function migrateAndSeed() {
 }
 
 // Housekeeping: ensure rent rows exist for the current week; materialise monthly bills.
+// A monthly recurring bill gets one pending bill per month, due on its DAY:n (max 28; 15 if unset).
+// Returns the new bill's id, or null if that month already has one.
+export async function ensureMonthlyBill(r, month = today().slice(0, 7)) {
+  const existing = await one(
+    `SELECT id FROM bills WHERE recurring_bill_id=$1 AND to_char(due_date,'YYYY-MM')=$2`, [r.id, month]);
+  if (existing) return null;
+  const day = String(r.due_rule || '').startsWith('DAY:') ? parseInt(r.due_rule.slice(4)) : 15;
+  const due = month + '-' + String(Math.min(day, 28)).padStart(2, '0');
+  const b = await one(`INSERT INTO bills (household_id, recurring_bill_id, category_id, name, amount, due_date, billing_period, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'pending') RETURNING id`,
+    [r.household_id, r.id, r.category_id, r.name, r.expected_amount || 0, due, month]);
+  return b.id;
+}
+
 export async function materialise() {
   const hh = await one('SELECT id FROM households LIMIT 1');
   if (!hh) return;
@@ -150,16 +164,7 @@ export async function materialise() {
   // Monthly recurring → ensure one pending bill this month
   const month = today().slice(0, 7);
   const recs = await all(`SELECT * FROM recurring_bills WHERE household_id=$1 AND active AND frequency='monthly'`, [hh.id]);
-  for (const r of recs) {
-    const existing = await one(
-      `SELECT id FROM bills WHERE recurring_bill_id=$1 AND to_char(due_date,'YYYY-MM')=$2`, [r.id, month]);
-    if (existing) continue;
-    const day = String(r.due_rule || '').startsWith('DAY:') ? parseInt(r.due_rule.slice(4)) : 15;
-    const due = month + '-' + String(Math.min(day, 28)).padStart(2, '0');
-    await q(`INSERT INTO bills (household_id, recurring_bill_id, category_id, name, amount, due_date, billing_period, status)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,'pending')`,
-      [hh.id, r.id, r.category_id, r.name, r.expected_amount || 0, due, month]);
-  }
+  for (const r of recs) await ensureMonthlyBill(r, month);
   // Expired logins are never valid again (requireAuth checks expires_at); drop them so the table doesn't grow forever.
   const gone = await q('DELETE FROM sessions WHERE expires_at < now()');
   if (gone.rowCount) console.log('[materialise] removed ' + gone.rowCount + ' expired sessions');

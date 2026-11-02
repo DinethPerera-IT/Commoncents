@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import pool, { q, one, all, tx } from './db.js';
-import { migrateAndSeed, materialise } from './seed.js';
+import { migrateAndSeed, materialise, ensureMonthlyBill } from './seed.js';
 import { login, logout, requireAuth, changePassword, publicUser } from './auth.js';
 import {
   weekStartOf, addDays, today, currentWeek, equalSplit, round2,
@@ -702,6 +702,89 @@ app.get('/api/reports/monthly', wrap(async (req, res) => {
     "SELECT to_char(expense_date, 'YYYY-MM') AS month, SUM(amount) AS total FROM expenses WHERE expense_date >= $1 GROUP BY 1",
     [months[0] + '-01']);
   res.json(months.map((month) => ({ month, total: Number(rows.find((r) => r.month === month)?.total || 0) })));
+}));
+
+// ---- recurring bills: admin create / edit / stop ----
+// Only *monthly* ones generate bills (one per month, see ensureMonthlyBill). Weekly (rent) is
+// tracked through rent records and prepaid (fibre) through the prepaid account; those entries
+// are reminders in the list.
+const FREQUENCIES = ['monthly', 'weekly', 'prepaid'];
+const adminOnly = (req, res) => {
+  if (req.user.is_admin) return false;
+  res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Admin only.' } });
+  return true;
+};
+async function recurringFields(b, existing) {
+  const name = b.name !== undefined ? String(b.name).trim() : existing?.name;
+  if (!name) return { err: ['MISSING_FIELD', 'Give the bill a name.', 'name'] };
+  const frequency = b.frequency !== undefined ? b.frequency : existing?.frequency;
+  if (!FREQUENCIES.includes(frequency)) return { err: ['MISSING_FIELD', 'Pick how often it comes.', 'frequency'] };
+  let category_id = existing?.category_id;
+  if (b.category !== undefined) {
+    const cat = await one('SELECT id FROM categories WHERE name=$1', [b.category]);
+    if (!cat) return { err: ['MISSING_FIELD', 'Pick a category.', 'category'] };
+    category_id = cat.id;
+  }
+  if (!category_id) return { err: ['MISSING_FIELD', 'Pick a category.', 'category'] };
+  const expected_amount = b.expected_amount !== undefined ? round2(Number(b.expected_amount)) : Number(existing?.expected_amount ?? 0);
+  if (isNaN(expected_amount) || expected_amount < 0) return { err: ['INVALID_AMOUNT', 'Enter an amount of $0 or more.', 'expected_amount'] };
+  let due_rule = existing?.due_rule || null;
+  if (frequency === 'monthly') {
+    const day = b.due_day !== undefined ? Number(b.due_day) : String(due_rule || '').startsWith('DAY:') ? parseInt(due_rule.slice(4)) : 15;
+    if (!Number.isInteger(day) || day < 1 || day > 28) return { err: ['INVALID_DATE', 'Due day must be 1–28 (every month has those).', 'due_day'] };
+    due_rule = 'DAY:' + day;
+  } else if (frequency === 'weekly') due_rule = 'MON';
+  else due_rule = 'ON_DEPLETION';
+  let default_payer = b.default_payer !== undefined ? b.default_payer || null : existing?.default_payer || null;
+  if (default_payer && !(await one('SELECT id FROM users WHERE id=$1', [default_payer]).catch(() => null))) {
+    return { err: ['MISSING_FIELD', 'Pick who usually pays.', 'default_payer'] };
+  }
+  return { fields: { name, frequency, category_id, expected_amount, due_rule, default_payer } };
+}
+app.post('/api/recurring-bills', wrap(async (req, res) => {
+  if (adminOnly(req, res)) return;
+  const { fields: f, err } = await recurringFields(req.body || {}, null);
+  if (err) return bad(res, ...err);
+  const r = await one(
+    `INSERT INTO recurring_bills (household_id, category_id, name, frequency, expected_amount, due_rule, default_payer)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [req.user.household_id, f.category_id, f.name, f.frequency, f.expected_amount, f.due_rule, f.default_payer]);
+  // A new monthly bill shows up right away instead of at the next 6-hourly run.
+  const generated_bill_id = r.frequency === 'monthly' ? await ensureMonthlyBill(r) : null;
+  const activity_id = await logActivity({
+    householdId: req.user.household_id, userId: req.user.id, entityType: 'recurring_bill', entityId: r.id,
+    action: 'create', summary: `Added recurring bill "${r.name}" (${r.frequency})`, after: { ...r, generated_bill_id },
+  });
+  res.json({ ...r, generated_bill_id, activity_id });
+}));
+// Changes apply to bills generated from now on; bills already in the list keep their amount.
+app.patch('/api/recurring-bills/:id', wrap(async (req, res) => {
+  if (adminOnly(req, res)) return;
+  const existing = await one('SELECT * FROM recurring_bills WHERE id=$1', [req.params.id]).catch(() => null);
+  if (!existing) return res.status(404).json({ error: { code: 'MISSING_FIELD', message: 'No such recurring bill.' } });
+  const { fields: f, err } = await recurringFields(req.body || {}, existing);
+  if (err) return bad(res, ...err);
+  const after = await one(
+    `UPDATE recurring_bills SET name=$1, frequency=$2, category_id=$3, expected_amount=$4, due_rule=$5, default_payer=$6
+     WHERE id=$7 RETURNING *`,
+    [f.name, f.frequency, f.category_id, f.expected_amount, f.due_rule, f.default_payer, existing.id]);
+  const activity_id = await logActivity({
+    householdId: req.user.household_id, userId: req.user.id, entityType: 'recurring_bill', entityId: existing.id,
+    action: 'update', summary: `Edited recurring bill "${after.name}"`, before: existing, after,
+  });
+  res.json({ ...after, activity_id });
+}));
+// "Delete" = stop: no more bills are generated. Past bills (and their payments) stay.
+app.delete('/api/recurring-bills/:id', wrap(async (req, res) => {
+  if (adminOnly(req, res)) return;
+  const existing = await one('SELECT * FROM recurring_bills WHERE id=$1 AND active', [req.params.id]).catch(() => null);
+  if (!existing) return res.status(404).json({ error: { code: 'MISSING_FIELD', message: 'No such recurring bill.' } });
+  await q('UPDATE recurring_bills SET active=false WHERE id=$1', [existing.id]);
+  const activity_id = await logActivity({
+    householdId: req.user.household_id, userId: req.user.id, entityType: 'recurring_bill', entityId: existing.id,
+    action: 'delete', summary: `Stopped recurring bill "${existing.name}"`, before: existing,
+  });
+  res.json({ ok: true, activity_id });
 }));
 
 // ---- category budgets ----

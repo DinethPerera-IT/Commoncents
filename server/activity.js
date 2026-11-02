@@ -23,6 +23,7 @@ const BILL_COLS = ['household_id', 'recurring_bill_id', 'category_id', 'name', '
 const SETTLEMENT_COLS = ['household_id', 'payer', 'recipient', 'amount', 'settled_on', 'method', 'notes', 'status', 'is_demo'];
 const TOPUP_COLS = ['prepaid_account_id', 'amount', 'paid_by', 'topup_date', 'is_demo'];
 const USAGE_COLS = ['prepaid_account_id', 'amount', 'usage_date', 'note', 'is_demo'];
+const RECURRING_COLS = ['category_id', 'name', 'frequency', 'expected_amount', 'due_rule', 'default_payer', 'active'];
 const RENT_COLS = ['household_id', 'user_id', 'week_start', 'amount_due', 'amount_paid', 'status', 'is_demo'];
 
 async function reinsert(table, id, cols, row) {
@@ -104,6 +105,21 @@ export async function undoActivity(activityId, actingUser) {
         await q('DELETE FROM rent_records WHERE id=$1', [a.entity_id]);
       } else {
         await updateBack('rent_records', a.entity_id, RENT_COLS, before);
+      }
+      break;
+    }
+    case 'recurring_bill': {
+      if (a.action === 'create') {
+        // Remove the bill it generated if nobody has paid it yet, then the recurring bill itself
+        // (or just stop it, if older bills still point at it).
+        if (after.generated_bill_id) await q("DELETE FROM bills WHERE id=$1 AND status='pending'", [after.generated_bill_id]);
+        const used = await one('SELECT 1 FROM bills WHERE recurring_bill_id=$1 LIMIT 1', [a.entity_id]);
+        if (used) await q('UPDATE recurring_bills SET active=false WHERE id=$1', [a.entity_id]);
+        else await q('DELETE FROM recurring_bills WHERE id=$1', [a.entity_id]);
+      } else if (a.action === 'update') {
+        await updateBack('recurring_bills', a.entity_id, RECURRING_COLS, before);
+      } else {
+        await q('UPDATE recurring_bills SET active=true WHERE id=$1', [a.entity_id]);
       }
       break;
     }
